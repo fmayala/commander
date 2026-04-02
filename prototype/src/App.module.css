@@ -1,0 +1,33 @@
+.layout {
+  display: grid;
+  grid-template-columns: var(--sidebar-width, 220px) 1fr var(--detail-width, 0px);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.layout[data-detail-open="true"] {
+  --detail-width: 380px;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  background: var(--bg-secondary);
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.detail {
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  background: var(--bg-secondary);
+}
+
+.detailHidden {
+  display: none;
+}
