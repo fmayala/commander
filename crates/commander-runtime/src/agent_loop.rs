@@ -10,8 +10,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
+
+const MAX_RATE_LIMIT_RETRIES: u32 = 3;
 
 #[derive(Debug, Error)]
 pub enum LoopError {
@@ -38,6 +41,39 @@ pub struct AgentLoopConfig {
     pub system_prompt: Option<String>,
     pub max_tokens: u32,
     pub checkpoint_path: Option<PathBuf>,
+}
+
+/// Call the adapter, retrying up to MAX_RATE_LIMIT_RETRIES times on rate-limit errors.
+async fn complete_with_retry(
+    adapter: &dyn LlmAdapter,
+    request: LlmRequest,
+) -> Result<LlmResponse, AdapterError> {
+    let mut last_err = None;
+    for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
+        // Rebuild request each attempt (LlmRequest isn't Clone, so pass by value on last attempt)
+        let req = LlmRequest {
+            messages: request.messages.clone(),
+            system_prompt: request.system_prompt.clone(),
+            tools: request.tools.clone(),
+            max_tokens: request.max_tokens,
+        };
+        match adapter.complete(req).await {
+            Ok(resp) => return Ok(resp),
+            Err(AdapterError::RateLimited { retry_after_ms }) => {
+                tracing::warn!(
+                    attempt,
+                    retry_after_ms,
+                    "LLM rate limited, retrying after delay"
+                );
+                if attempt < MAX_RATE_LIMIT_RETRIES {
+                    tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+                }
+                last_err = Some(AdapterError::RateLimited { retry_after_ms });
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap())
 }
 
 /// The core agent loop. Each iteration = one LLM call + tool execution.
@@ -80,7 +116,7 @@ pub async fn run_agent_loop(
             max_tokens: config.max_tokens,
         };
 
-        let response: LlmResponse = adapter.complete(request).await?;
+        let response: LlmResponse = complete_with_retry(adapter, request).await?;
 
         // 2. Build assistant message
         let assistant_msg = Message {
@@ -373,5 +409,144 @@ mod tests {
             .unwrap();
         // Transcript has 3 messages (assistant + tool results + assistant end), not the initial user msg
         assert_eq!(loaded.len(), 3);
+    }
+
+    /// Adapter that returns RateLimited on the first N calls, then succeeds.
+    struct RateLimitedAdapter {
+        rate_limit_turns: u32,
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmAdapter for RateLimitedAdapter {
+        async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
+            let count = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < self.rate_limit_turns {
+                Err(AdapterError::RateLimited { retry_after_ms: 0 })
+            } else {
+                Ok(LlmResponse {
+                    content: vec![ContentBlock::text("done")],
+                    usage: TokenUsage::default(),
+                    stop_reason: StopReason::EndTurn,
+                })
+            }
+        }
+
+        fn model_id(&self) -> &str {
+            "mock-rate-limited"
+        }
+        fn context_window(&self) -> u32 {
+            128_000
+        }
+        fn max_output_tokens(&self) -> u32 {
+            4096
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_loop_retries_on_rate_limit_and_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let transcript_path = dir.path().join("transcript.jsonl");
+        let mut transcript = TranscriptWriter::open(&transcript_path).await.unwrap();
+
+        let registry = ToolRegistry::new();
+        let permissions = PermissionEngine::new(PermissionMode::AutoApprove);
+        let hooks = NoopHookRunner;
+        let observer = AutoApproveObserver;
+        let cancel = CancellationToken::new();
+
+        // Rate-limits on first 2 calls, succeeds on 3rd
+        let adapter = RateLimitedAdapter {
+            rate_limit_turns: 2,
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        };
+
+        let config = AgentLoopConfig {
+            max_turns: 5,
+            cwd: dir.path().to_path_buf(),
+            session_id: "test-retry".into(),
+            env: HashMap::new(),
+            system_prompt: None,
+            max_tokens: 1024,
+            checkpoint_path: None,
+        };
+
+        let mut messages = vec![Message::user("hello")];
+
+        let outcome = run_agent_loop(
+            config,
+            &adapter,
+            &registry,
+            &permissions,
+            &hooks,
+            &observer,
+            &mut transcript,
+            &mut messages,
+            cancel,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, SessionOutcome::EndTurn);
+        assert_eq!(
+            adapter
+                .call_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_fails_after_max_rate_limit_retries() {
+        let dir = TempDir::new().unwrap();
+        let transcript_path = dir.path().join("transcript.jsonl");
+        let mut transcript = TranscriptWriter::open(&transcript_path).await.unwrap();
+
+        let registry = ToolRegistry::new();
+        let permissions = PermissionEngine::new(PermissionMode::AutoApprove);
+        let hooks = NoopHookRunner;
+        let observer = AutoApproveObserver;
+        let cancel = CancellationToken::new();
+
+        // Always rate-limited — exceeds MAX_RATE_LIMIT_RETRIES (3)
+        let adapter = RateLimitedAdapter {
+            rate_limit_turns: MAX_RATE_LIMIT_RETRIES + 1,
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        };
+
+        let config = AgentLoopConfig {
+            max_turns: 5,
+            cwd: dir.path().to_path_buf(),
+            session_id: "test-retry-exhaust".into(),
+            env: HashMap::new(),
+            system_prompt: None,
+            max_tokens: 1024,
+            checkpoint_path: None,
+        };
+
+        let mut messages = vec![Message::user("hello")];
+
+        let err = run_agent_loop(
+            config,
+            &adapter,
+            &registry,
+            &permissions,
+            &hooks,
+            &observer,
+            &mut transcript,
+            &mut messages,
+            cancel,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            LoopError::Adapter(AdapterError::RateLimited { .. })
+        ));
     }
 }
