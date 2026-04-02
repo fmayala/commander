@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use commander_concurrency::key::derive_key;
 use commander_concurrency::policy::ConcurrencyPolicy;
@@ -1034,7 +1034,8 @@ fn check_completion_contract(
         params![task_id],
         |row| row.get(0),
     )?;
-    let required: Vec<String> = serde_json::from_str(&criteria_json).unwrap_or_default();
+    let required: Vec<String> = serde_json::from_str(&criteria_json)
+        .with_context(|| format!("failed to parse acceptance_criteria JSON for task {task_id}"))?;
     if required.is_empty() {
         return Ok(None);
     }
@@ -1159,7 +1160,13 @@ fn load_task_baseline(baseline_file_path: &Path) -> Vec<String> {
     let Ok(raw) = std::fs::read_to_string(baseline_file_path) else {
         return Vec::new();
     };
-    serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+    match serde_json::from_str::<Vec<String>>(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(path = %baseline_file_path.display(), error = %e, "failed to parse baseline JSON, using empty baseline");
+            Vec::new()
+        }
+    }
 }
 
 fn capture_git_status_snapshot(working_dir: &Path) -> Result<Vec<String>> {
@@ -1203,7 +1210,8 @@ fn escalate_blocked_pending_tasks(conn: &rusqlite::Connection) -> Result<u32> {
 
         let mut changed_this_pass = 0_u32;
         for (task_id, deps_json) in rows {
-            let deps: Vec<String> = serde_json::from_str(&deps_json).unwrap_or_default();
+            let deps: Vec<String> = serde_json::from_str(&deps_json)
+                .with_context(|| format!("failed to parse depends_on JSON for task {task_id}"))?;
             if deps.is_empty() {
                 continue;
             }
@@ -1251,7 +1259,8 @@ async fn run_validation(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let task_kind = parse_task_kind(task_kind_raw.as_str());
-    let allowed_files: Vec<String> = serde_json::from_str(&files_json).unwrap_or_default();
+    let allowed_files: Vec<String> = serde_json::from_str(&files_json)
+        .with_context(|| format!("failed to parse files JSON for task {task_id}"))?;
     let require_in_scope_changes = task_kind.requires_in_scope_changes(!allowed_files.is_empty());
 
     let mut pipeline = ValidationPipeline::new(config.validation.max_fix_cycles);
@@ -1328,7 +1337,12 @@ fn query_runnable_tasks(conn: &rusqlite::Connection) -> Result<Vec<RunnableTask>
     for (id, project_id, title, description, task_kind, criteria_json, files_json, deps_json) in
         rows
     {
-        let deps: Vec<String> = serde_json::from_str(&deps_json).unwrap_or_default();
+        let deps: Vec<String> = serde_json::from_str(&deps_json)
+            .with_context(|| format!("failed to parse depends_on JSON for task {id}"))?;
+        let acceptance_criteria: Vec<String> = serde_json::from_str(&criteria_json)
+            .with_context(|| format!("failed to parse acceptance_criteria JSON for task {id}"))?;
+        let files: Vec<String> = serde_json::from_str(&files_json)
+            .with_context(|| format!("failed to parse files JSON for task {id}"))?;
         if deps.is_empty() {
             runnable.push(RunnableTask {
                 id,
@@ -1336,8 +1350,8 @@ fn query_runnable_tasks(conn: &rusqlite::Connection) -> Result<Vec<RunnableTask>
                 title,
                 description,
                 kind: parse_task_kind(&task_kind),
-                acceptance_criteria: serde_json::from_str(&criteria_json).unwrap_or_default(),
-                files: serde_json::from_str(&files_json).unwrap_or_default(),
+                acceptance_criteria,
+                files,
             });
             continue;
         }
@@ -1357,8 +1371,8 @@ fn query_runnable_tasks(conn: &rusqlite::Connection) -> Result<Vec<RunnableTask>
                 title,
                 description,
                 kind: parse_task_kind(&task_kind),
-                acceptance_criteria: serde_json::from_str(&criteria_json).unwrap_or_default(),
-                files: serde_json::from_str(&files_json).unwrap_or_default(),
+                acceptance_criteria,
+                files,
             });
         }
     }
@@ -1479,6 +1493,60 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::init_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn query_runnable_tasks_rejects_corrupt_files_json() {
+        let conn = open_test_db();
+        // Insert a task with corrupted files JSON — simulates DB corruption or injection
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, description, task_kind, acceptance_criteria, files, depends_on, status)
+             VALUES ('t-corrupt', 'proj', 'Bad Task', '', 'implement', '[]', 'NOT_VALID_JSON', '[]', 'pending')",
+            [],
+        )
+        .unwrap();
+
+        let result = query_runnable_tasks(&conn);
+        assert!(result.is_err(), "corrupt files JSON must return an error, not silently bypass file restrictions");
+        let msg = format!("{}", result.err().unwrap());
+        assert!(msg.contains("files"), "error should mention the 'files' field");
+    }
+
+    #[test]
+    fn query_runnable_tasks_rejects_corrupt_acceptance_criteria_json() {
+        let conn = open_test_db();
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, description, task_kind, acceptance_criteria, files, depends_on, status)
+             VALUES ('t-crit', 'proj', 'Bad Criteria', '', 'implement', 'NOT_JSON', '[]', '[]', 'pending')",
+            [],
+        )
+        .unwrap();
+
+        let result = query_runnable_tasks(&conn);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn check_completion_contract_rejects_corrupt_criteria_json() {
+        let conn = open_test_db();
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, description, acceptance_criteria, status)
+             VALUES ('t-cc', 'proj', 'Task', '', 'NOT_JSON', 'pending')",
+            [],
+        )
+        .unwrap();
+
+        let dummy_result = WorkerResult {
+            task_id: "t-cc".into(),
+            agent_id: "agent-1".into(),
+            attempt_id: "attempt-1".into(),
+            status: "complete".into(),
+            summary: "done".into(),
+            criteria_evidence: vec![],
+            issues: vec![],
+        };
+        let result = check_completion_contract(&conn, "t-cc", &dummy_result);
+        assert!(result.is_err(), "corrupt acceptance_criteria JSON must return an error");
     }
 
     #[test]
