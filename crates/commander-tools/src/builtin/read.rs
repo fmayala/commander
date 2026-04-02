@@ -39,6 +39,13 @@ impl Tool for ReadTool {
             ctx.cwd.join(file_path)
         };
 
+        // PathGuard check: enforce boundary before any read
+        if let Some(guard) = &ctx.path_guard {
+            guard
+                .check_read(&path)
+                .map_err(|e| ToolError::BoundaryViolation { path: e.path })?;
+        }
+
         let content = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| ToolError::Execution(format!("failed to read {}: {e}", path.display())))?;
@@ -61,5 +68,76 @@ impl Tool for ReadTool {
             .join("\n");
 
         Ok(ToolOutput::success(Value::String(numbered)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::path_guard::{BoundaryViolation, PathGuard};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    struct AllowAllGuard;
+    impl PathGuard for AllowAllGuard {
+        fn check_write(&self, _path: &Path) -> Result<(), BoundaryViolation> {
+            Ok(())
+        }
+    }
+
+    struct DenyAllGuard;
+    impl PathGuard for DenyAllGuard {
+        fn check_write(&self, path: &Path) -> Result<(), BoundaryViolation> {
+            Err(BoundaryViolation {
+                path: path.display().to_string(),
+            })
+        }
+    }
+
+    fn make_ctx(guard: Option<Arc<dyn PathGuard>>) -> ToolContext {
+        ToolContext {
+            cwd: PathBuf::from("/tmp"),
+            session_id: "test".into(),
+            cancel: CancellationToken::new(),
+            env: Default::default(),
+            path_guard: guard,
+        }
+    }
+
+    #[tokio::test]
+    async fn read_allowed_by_guard() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "hello\nworld\n").unwrap();
+        let ctx = make_ctx(Some(Arc::new(AllowAllGuard)));
+
+        let input = serde_json::json!({ "file_path": path.to_str().unwrap() });
+        let result = ReadTool.call(input, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn read_blocked_by_guard() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("secret.txt");
+        std::fs::write(&path, "top secret").unwrap();
+        let ctx = make_ctx(Some(Arc::new(DenyAllGuard)));
+
+        let input = serde_json::json!({ "file_path": path.to_str().unwrap() });
+        let result = ReadTool.call(input, &ctx).await;
+        assert!(matches!(result, Err(ToolError::BoundaryViolation { .. })));
+    }
+
+    #[tokio::test]
+    async fn read_no_guard_allows_all() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "no guard").unwrap();
+        let ctx = make_ctx(None);
+
+        let input = serde_json::json!({ "file_path": path.to_str().unwrap() });
+        let result = ReadTool.call(input, &ctx).await;
+        assert!(result.is_ok());
     }
 }

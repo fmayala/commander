@@ -45,6 +45,16 @@ impl TaskBoundaryGuard {
 
 impl PathGuard for TaskBoundaryGuard {
     fn check_write(&self, path: &Path) -> Result<(), BoundaryViolation> {
+        self.check_path(path)
+    }
+
+    fn check_read(&self, path: &Path) -> Result<(), BoundaryViolation> {
+        self.check_path(path)
+    }
+}
+
+impl TaskBoundaryGuard {
+    fn check_path(&self, path: &Path) -> Result<(), BoundaryViolation> {
         // If no patterns are configured, allow all (standalone/interactive mode).
         if self.allowed_patterns.is_empty() {
             return Ok(());
