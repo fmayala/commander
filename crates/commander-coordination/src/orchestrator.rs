@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use commander_tasks::task::Task;
 use serde::{Deserialize, Serialize};
 
+use crate::validation::{ValidationContext, ValidationPipeline};
+
 /// Result of a completed task's validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
@@ -114,12 +116,27 @@ pub enum OrchestratorError {
 /// In-memory orchestrator for testing. Wraps a TaskQueue directly.
 pub struct InMemoryOrchestrator {
     pub queue: std::sync::Mutex<commander_tasks::queue::TaskQueue>,
+    /// When set, `validate()` runs the real pipeline instead of returning the stub.
+    validation: Option<(ValidationPipeline, ValidationContext)>,
 }
 
 impl InMemoryOrchestrator {
     pub fn new(queue: commander_tasks::queue::TaskQueue) -> Self {
         Self {
             queue: std::sync::Mutex::new(queue),
+            validation: None,
+        }
+    }
+
+    /// Build an orchestrator wired to a real validation pipeline.
+    pub fn with_validation(
+        queue: commander_tasks::queue::TaskQueue,
+        pipeline: ValidationPipeline,
+        context: ValidationContext,
+    ) -> Self {
+        Self {
+            queue: std::sync::Mutex::new(queue),
+            validation: Some((pipeline, context)),
         }
     }
 }
@@ -173,10 +190,13 @@ impl Orchestrator for InMemoryOrchestrator {
             .map_err(|e| OrchestratorError::InvalidTransition(e.to_string()))
     }
 
-    async fn validate(&self, _task_id: &str) -> ValidationResult {
-        ValidationResult {
-            passed: true,
-            issues: vec![],
+    async fn validate(&self, task_id: &str) -> ValidationResult {
+        match &self.validation {
+            Some((pipeline, context)) => pipeline.run(task_id, context).await,
+            None => ValidationResult {
+                passed: true,
+                issues: vec![],
+            },
         }
     }
 }
@@ -248,5 +268,64 @@ mod tests {
         // Escalated tasks are not runnable
         let runnable = orch.next_runnable_tasks().await;
         assert!(runnable.is_empty());
+    }
+
+    #[tokio::test]
+    async fn validate_without_pipeline_returns_passed() {
+        let q = TaskQueue::new();
+        let orch = InMemoryOrchestrator::new(q);
+        let result = orch.validate("any-task").await;
+        assert!(result.passed);
+        assert!(result.issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn validate_with_pipeline_calls_steps() {
+        use crate::validation::{StepResult, ValidationContext, ValidationPipeline, ValidationStep};
+
+        struct AlwaysFail;
+
+        #[async_trait::async_trait]
+        impl ValidationStep for AlwaysFail {
+            fn name(&self) -> &str {
+                "always_fail"
+            }
+            async fn run(
+                &self,
+                _task_id: &str,
+                _ctx: &ValidationContext,
+            ) -> StepResult {
+                StepResult {
+                    passed: false,
+                    issues: vec![crate::orchestrator::ReviewIssue {
+                        file: "test.rs".into(),
+                        severity: crate::orchestrator::Severity::Error,
+                        category: crate::orchestrator::Category::Logic,
+                        description: "step was invoked".into(),
+                        fix_attempts: 0,
+                    }],
+                }
+            }
+        }
+
+        let mut pipeline = ValidationPipeline::new(0);
+        pipeline.add_step(Box::new(AlwaysFail));
+
+        let context = ValidationContext {
+            working_dir: std::path::PathBuf::from("/tmp"),
+            allowed_files: vec![],
+            require_in_scope_changes: false,
+            baseline_paths: vec![],
+            ignored_prefixes: vec![],
+            test_command: None,
+        };
+
+        let q = TaskQueue::new();
+        let orch = InMemoryOrchestrator::with_validation(q, pipeline, context);
+        let result = orch.validate("task-1").await;
+
+        assert!(!result.passed, "pipeline step should have failed validation");
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.issues[0].description, "step was invoked");
     }
 }
