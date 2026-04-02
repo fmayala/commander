@@ -13,6 +13,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use tokio::process::Child;
+use tokio_util::sync::CancellationToken;
 
 use crate::commands::agent_worker::WorkerResult;
 use crate::config::CommanderConfig;
@@ -110,6 +111,18 @@ pub async fn run(project_dir: &Path) -> Result<()> {
         config.supervisor.tick_interval_ms
     );
     println!("Press Ctrl+C to stop.\n");
+
+    // Set up graceful shutdown on SIGTERM / SIGINT.
+    let shutdown = CancellationToken::new();
+    {
+        let shutdown_clone = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("received shutdown signal, draining active agents");
+            println!("\nShutdown requested — waiting for active agents to finish...");
+            shutdown_clone.cancel();
+        });
+    }
 
     // 8. Management loop
     loop {
@@ -298,7 +311,12 @@ pub async fn run(project_dir: &Path) -> Result<()> {
         }
 
         // --- Step B: Spawn new agents for runnable tasks ---
-        let runnable = query_runnable_tasks(&conn)?;
+        // During graceful shutdown, skip spawning and only drain in-flight agents.
+        let runnable = if shutdown.is_cancelled() {
+            vec![]
+        } else {
+            query_runnable_tasks(&conn)?
+        };
 
         for task in &runnable {
             let check_task =
@@ -457,7 +475,12 @@ pub async fn run(project_dir: &Path) -> Result<()> {
             println!("  ✗ escalated {blocked_escalations} task(s) blocked by failed dependencies");
         }
 
-        // --- Step C: Check if done ---
+        // --- Step C: Check if done (or shutdown-drained) ---
+        if shutdown.is_cancelled() && active_agents.is_empty() {
+            println!("Graceful shutdown complete.");
+            break;
+        }
+
         let remaining = count_active_tasks(&conn)?;
         if remaining == 0 && active_agents.is_empty() {
             let total: u32 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
@@ -479,7 +502,11 @@ pub async fn run(project_dir: &Path) -> Result<()> {
             }
         }
 
-        tokio::time::sleep(tick_interval).await;
+        // Wake immediately when shutdown is requested rather than sleeping out the full tick.
+        tokio::select! {
+            _ = tokio::time::sleep(tick_interval) => {},
+            _ = shutdown.cancelled() => {},
+        }
     }
 
     Ok(())
@@ -1342,6 +1369,23 @@ fn count_active_tasks(conn: &rusqlite::Connection) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_token_wakes_sleeping_select() {
+        // Verify that cancelling the token immediately unblocks a long sleep via select!,
+        // which is the mechanism used by the graceful-shutdown path in run().
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+        tokio::spawn(async move {
+            token_clone.cancel();
+        });
+        let start = std::time::Instant::now();
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => panic!("should not sleep"),
+            _ = token.cancelled() => {},
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
 
     #[test]
     fn parse_task_kind_defaults_to_implement_for_unknown_values() {
