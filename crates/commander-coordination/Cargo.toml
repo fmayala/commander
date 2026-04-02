@@ -1,0 +1,17 @@
+[package]
+name = "commander-coordination"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+commander-messages = { path = "../commander-messages" }
+commander-tasks = { path = "../commander-tasks" }
+commander-agents = { path = "../commander-agents" }
+commander-ipc = { path = "../commander-ipc" }
+commander-tools = { path = "../commander-tools" }
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

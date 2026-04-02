@@ -1,0 +1,29 @@
+[package]
+name = "commander-cli"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "commander"
+path = "src/main.rs"
+
+[dependencies]
+commander-messages = { path = "../commander-messages" }
+commander-permissions = { path = "../commander-permissions" }
+commander-hooks = { path = "../commander-hooks" }
+commander-tools = { path = "../commander-tools" }
+commander-mcp = { path = "../commander-mcp" }
+commander-runtime = { path = "../commander-runtime" }
+commander-tasks = { path = "../commander-tasks" }
+commander-agents = { path = "../commander-agents" }
+commander-ipc = { path = "../commander-ipc" }
+commander-coordination = { path = "../commander-coordination" }
+commander-scheduler = { path = "../commander-scheduler" }
+commander-supervisor = { path = "../commander-supervisor" }
+commander-concurrency = { path = "../commander-concurrency" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

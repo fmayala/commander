@@ -1,0 +1,16 @@
+[package]
+name = "commander-hooks"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+commander-messages = { path = "../commander-messages" }
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util", "macros"] }

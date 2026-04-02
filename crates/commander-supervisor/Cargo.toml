@@ -1,0 +1,14 @@
+[package]
+name = "commander-supervisor"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+commander-agents = { path = "../commander-agents" }
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "commander-scheduler"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+commander-tasks = { path = "../commander-tasks" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
