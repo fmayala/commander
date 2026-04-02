@@ -6,7 +6,4 @@
 .commander/
 .superpowers/
 .claude/
-autoresearch/
-docs/
-PRODUCTION_SCOPE.md
-prototype/
+autoresearch/run.log
