@@ -291,7 +291,17 @@ impl LlmAdapter for CodexAdapter {
     }
 }
 
-/// Extract chatgpt_account_id from JWT payload (no signature verification).
+/// Extract chatgpt_account_id from JWT payload with claim validation.
+///
+/// Validates:
+/// - JWT structure (3 dot-separated parts)
+/// - Payload is valid base64 + JSON
+/// - `exp` claim exists and token is not expired
+/// - `chatgpt_account_id` claim is present
+///
+/// Note: Signature verification is not performed because we do not have
+/// access to the issuer's public keys at init time. The API server
+/// validates the signature on each request.
 fn extract_account_id(token: &str) -> anyhow::Result<String> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
@@ -307,6 +317,9 @@ fn extract_account_id(token: &str) -> anyhow::Result<String> {
     let payload: Value = serde_json::from_slice(&payload_bytes)
         .map_err(|e| anyhow::anyhow!("failed to parse JWT payload JSON: {e}"))?;
 
+    // Validate expiration claim
+    validate_jwt_expiration(&payload)?;
+
     let account_id = payload
         .pointer("/https://api.openai.com/auth/chatgpt_account_id")
         .or_else(|| payload.pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id"))
@@ -315,6 +328,25 @@ fn extract_account_id(token: &str) -> anyhow::Result<String> {
         .to_string();
 
     Ok(account_id)
+}
+
+/// Validate the `exp` claim in a JWT payload. Rejects tokens that are
+/// expired or missing the `exp` claim entirely.
+fn validate_jwt_expiration(payload: &Value) -> anyhow::Result<()> {
+    let exp = payload
+        .get("exp")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| anyhow::anyhow!("JWT payload missing required 'exp' (expiration) claim"))?;
+
+    let now = chrono::Utc::now().timestamp();
+    if exp < now {
+        anyhow::bail!(
+            "CODEX_ACCESS_TOKEN is expired (exp={exp}, now={now}, expired {}s ago)",
+            now - exp
+        );
+    }
+
+    Ok(())
 }
 
 /// Map a model string to a Codex model identifier.
@@ -408,6 +440,86 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"outpu
         }
         assert_eq!(response.stop_reason, StopReason::EndTurn);
         assert_eq!(response.usage.input_tokens, 10);
+    }
+
+    /// Build a fake JWT with the given payload claims for testing.
+    fn make_test_jwt(payload: &Value) -> String {
+        use base64::Engine;
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(payload).unwrap());
+        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(b"fakesig");
+        format!("{header}.{payload}.{signature}")
+    }
+
+    #[test]
+    fn extract_account_id_valid_token() {
+        let exp = chrono::Utc::now().timestamp() + 3600; // expires in 1 hour
+        let payload = json!({
+            "exp": exp,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-valid-123"
+            }
+        });
+        let token = make_test_jwt(&payload);
+        let result = extract_account_id(&token).unwrap();
+        assert_eq!(result, "acc-valid-123");
+    }
+
+    #[test]
+    fn extract_account_id_expired_token() {
+        let exp = chrono::Utc::now().timestamp() - 60; // expired 60s ago
+        let payload = json!({
+            "exp": exp,
+            "https://api.openai.com/auth/chatgpt_account_id": "acc-expired"
+        });
+        let token = make_test_jwt(&payload);
+        let err = extract_account_id(&token).unwrap_err();
+        assert!(err.to_string().contains("expired"), "expected expiration error, got: {err}");
+    }
+
+    #[test]
+    fn extract_account_id_missing_exp() {
+        let payload = json!({
+            "https://api.openai.com/auth/chatgpt_account_id": "acc-no-exp"
+        });
+        let token = make_test_jwt(&payload);
+        let err = extract_account_id(&token).unwrap_err();
+        assert!(err.to_string().contains("exp"), "expected exp claim error, got: {err}");
+    }
+
+    #[test]
+    fn extract_account_id_missing_account_claim() {
+        let exp = chrono::Utc::now().timestamp() + 3600;
+        let payload = json!({ "exp": exp, "sub": "user-1" });
+        let token = make_test_jwt(&payload);
+        let err = extract_account_id(&token).unwrap_err();
+        assert!(err.to_string().contains("chatgpt_account_id"), "expected account_id error, got: {err}");
+    }
+
+    #[test]
+    fn extract_account_id_not_jwt() {
+        let err = extract_account_id("not-a-jwt").unwrap_err();
+        assert!(err.to_string().contains("3 parts"), "expected structure error, got: {err}");
+    }
+
+    #[test]
+    fn extract_account_id_invalid_base64() {
+        let err = extract_account_id("header.!!!invalid!!!.sig").unwrap_err();
+        assert!(err.to_string().contains("decode"), "expected decode error, got: {err}");
+    }
+
+    #[test]
+    fn extract_account_id_invalid_json() {
+        use base64::Engine;
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"{}");
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"not json");
+        let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"sig");
+        let token = format!("{header}.{payload}.{sig}");
+        let err = extract_account_id(&token).unwrap_err();
+        assert!(err.to_string().contains("parse JWT payload"), "expected JSON error, got: {err}");
     }
 
     #[test]
