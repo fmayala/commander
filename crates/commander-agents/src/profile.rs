@@ -148,4 +148,81 @@ Read-only agent.
         let md = "no frontmatter here";
         assert!(AgentProfile::from_markdown(md, None).is_err());
     }
+
+    #[test]
+    fn unclosed_frontmatter_errors() {
+        let md = "---\nname: test\nNo closing delimiter";
+        let err = AgentProfile::from_markdown(md, None).unwrap_err();
+        assert!(matches!(err, ProfileError::MissingFrontmatter));
+    }
+
+    #[test]
+    fn malformed_yaml_errors() {
+        let md = "---\n: : : not valid yaml [[[{\n---\nbody";
+        let err = AgentProfile::from_markdown(md, None).unwrap_err();
+        assert!(matches!(err, ProfileError::YamlParse(_)));
+    }
+
+    #[test]
+    fn missing_required_name_field_errors() {
+        let md = "---\nmodel: claude-opus-4-6\n---\nbody";
+        let err = AgentProfile::from_markdown(md, None).unwrap_err();
+        assert!(matches!(err, ProfileError::YamlParse(_)));
+    }
+
+    #[test]
+    fn defaults_applied_when_optional_fields_omitted() {
+        let md = "---\nname: minimal\n---\nbody text";
+        let profile = AgentProfile::from_markdown(md, None).unwrap();
+        assert_eq!(profile.name, "minimal");
+        assert_eq!(profile.model, "claude-opus-4-6");
+        assert_eq!(profile.max_turns, 50);
+        assert_eq!(profile.timeout, "30m");
+        assert_eq!(profile.permission_mode, PermissionMode::Ask);
+        assert!(profile.tools.is_none());
+        assert!(profile.skills.is_empty());
+    }
+
+    #[test]
+    fn skills_list_parsed() {
+        let md = "---\nname: skilled\nskills:\n  - code-review\n  - testing\n---\nbody";
+        let profile = AgentProfile::from_markdown(md, None).unwrap();
+        assert_eq!(profile.skills, vec!["code-review", "testing"]);
+    }
+
+    #[test]
+    fn empty_body_ok() {
+        let md = "---\nname: headless\n---\n";
+        let profile = AgentProfile::from_markdown(md, None).unwrap();
+        assert_eq!(profile.system_prompt, "");
+    }
+
+    #[test]
+    fn source_path_propagated() {
+        let md = "---\nname: pathed\n---\nprompt";
+        let p = Path::new("/agents/worker.md");
+        let profile = AgentProfile::from_markdown(md, Some(p)).unwrap();
+        assert_eq!(profile.source_path.unwrap(), PathBuf::from("/agents/worker.md"));
+    }
+
+    #[test]
+    fn leading_whitespace_before_frontmatter_ok() {
+        let md = "  \n\n---\nname: spaced\n---\nbody";
+        let profile = AgentProfile::from_markdown(md, None).unwrap();
+        assert_eq!(profile.name, "spaced");
+    }
+
+    #[test]
+    fn invalid_permission_mode_errors() {
+        let md = "---\nname: bad-mode\npermission_mode: yolo\n---\nbody";
+        let err = AgentProfile::from_markdown(md, None).unwrap_err();
+        assert!(matches!(err, ProfileError::YamlParse(_)));
+    }
+
+    #[test]
+    fn normal_permission_mode_parsed() {
+        let md = "---\nname: norm\npermission_mode: normal\n---\nbody";
+        let profile = AgentProfile::from_markdown(md, None).unwrap();
+        assert_eq!(profile.permission_mode, PermissionMode::Normal);
+    }
 }
