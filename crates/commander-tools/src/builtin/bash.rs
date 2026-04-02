@@ -49,7 +49,7 @@ impl Tool for BashTool {
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| ctx.cwd.clone());
 
-        let child = Command::new("bash")
+        let mut child = Command::new("bash")
             .arg("-c")
             .arg(command)
             .current_dir(&command_cwd)
@@ -58,14 +58,30 @@ impl Tool for BashTool {
             .stderr(std::process::Stdio::piped())
             .spawn()?;
 
-        let timeout = std::time::Duration::from_millis(timeout_ms);
-        let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
+        // Take stdout/stderr before waiting so we retain the child handle for explicit
+        // kill on timeout. Reading concurrently avoids pipe-buffer deadlock on large output.
+        let mut stdout_reader = child.stdout.take().expect("stdout is piped");
+        let mut stderr_reader = child.stderr.take().expect("stderr is piped");
+        let stdout_task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            stdout_reader.read_to_end(&mut buf).await.map(|_| buf)
+        });
+        let stderr_task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            stderr_reader.read_to_end(&mut buf).await.map(|_| buf)
+        });
 
-        match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let code = output.status.code().unwrap_or(-1);
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+        // child.wait() takes &mut self, preserving child for explicit kill on timeout
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) => {
+                let stdout_bytes = stdout_task.await.ok().and_then(|r| r.ok()).unwrap_or_default();
+                let stderr_bytes = stderr_task.await.ok().and_then(|r| r.ok()).unwrap_or_default();
+                let stdout = String::from_utf8_lossy(&stdout_bytes);
+                let stderr = String::from_utf8_lossy(&stderr_bytes);
+                let code = status.code().unwrap_or(-1);
 
                 let combined = if stderr.is_empty() {
                     stdout.to_string()
@@ -75,15 +91,22 @@ impl Tool for BashTool {
                     format!("{stdout}\n{stderr}")
                 };
 
-                if output.status.success() {
+                if status.success() {
                     Ok(ToolOutput::success(Value::String(combined)))
                 } else {
                     Ok(ToolOutput::error(format!("Exit code {code}\n{combined}")))
                 }
             }
-            Ok(Err(e)) => Err(ToolError::Execution(format!("process error: {e}"))),
+            Ok(Err(e)) => {
+                stdout_task.abort();
+                stderr_task.abort();
+                Err(ToolError::Execution(format!("process error: {e}")))
+            }
             Err(_) => {
-                // Timeout — the future was cancelled, which drops the child
+                // Timeout — explicitly kill the child so it doesn't become an orphan
+                let _ = child.start_kill();
+                stdout_task.abort();
+                stderr_task.abort();
                 Ok(ToolOutput::error(format!(
                     "Command timed out after {timeout_ms}ms"
                 )))
@@ -144,6 +167,26 @@ mod tests {
         let result = BashTool.call(input, &ctx()).await.unwrap();
         assert!(result.is_error);
         assert!(result.content.as_str().unwrap().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_child_process() {
+        // Verify the child bash process is explicitly killed on timeout.
+        // "sleep 0.5 && touch file" requires bash to be alive after sleep exits.
+        // If bash is killed at timeout, the touch never runs.
+        let tmp = std::env::temp_dir()
+            .join(format!("commander_kill_test_{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let cmd = format!("sleep 0.5 && touch {}", tmp.display());
+        let input = serde_json::json!({"command": cmd, "timeout": 50});
+        let result = BashTool.call(input, &ctx()).await.unwrap();
+        assert!(result.is_error);
+        assert!(result.content.as_str().unwrap().contains("timed out"));
+        // Wait past the sleep delay; if bash was killed the touch never runs
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let file_exists = tmp.exists();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(!file_exists, "child process was not killed: file was created after timeout");
     }
 
     #[tokio::test]
