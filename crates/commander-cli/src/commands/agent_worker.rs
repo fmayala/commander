@@ -286,13 +286,19 @@ pub async fn run(id: &str, config_path: &Path) -> Result<()> {
         "agent worker finished"
     );
 
-    // Exit code based on status
-    if result.status == "failed" {
-        // Still exit 0 — the result file has the failure details.
-        // Exit non-zero only for init failures (handled by the caller).
+    if worker_failed(&result.status) {
+        anyhow::bail!("worker finished with status: {}", result.status);
     }
 
     Ok(())
+}
+
+/// Returns true when the worker should cause the process to exit non-zero.
+///
+/// "failed" and "max_turns" are treated as errors so the supervisor can
+/// detect failures from the process exit code alone, not just the result file.
+fn worker_failed(status: &str) -> bool {
+    matches!(status, "failed" | "max_turns")
 }
 
 /// Write result file atomically: tmp → fsync → rename.
@@ -466,4 +472,22 @@ fn extract_completion_signal(messages: &[Message]) -> Option<CompletionSignal> {
         summary,
         criteria_evidence,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_failed_returns_true_for_error_statuses() {
+        assert!(worker_failed("failed"));
+        assert!(worker_failed("max_turns"));
+    }
+
+    #[test]
+    fn worker_failed_returns_false_for_success_statuses() {
+        assert!(!worker_failed("complete"));
+        assert!(!worker_failed("incomplete"));
+        assert!(!worker_failed(""));
+    }
 }
