@@ -56,9 +56,9 @@ impl ProcessSpawner for OsProcessSpawner {
             .spawn()
             .map_err(|e| SpawnError::SpawnFailed(e.to_string()))?;
 
-        let pid = child.id().ok_or_else(|| {
-            SpawnError::SpawnFailed("process exited immediately".into())
-        })?;
+        let pid = child
+            .id()
+            .ok_or_else(|| SpawnError::SpawnFailed("process exited immediately".into()))?;
 
         Ok(AgentHandle {
             agent_id: agent_id.into(),
@@ -100,10 +100,7 @@ impl ProcessSpawner for MockSpawner {
         task_id: &str,
         _config_path: &Path,
     ) -> Result<AgentHandle, SpawnError> {
-        if self
-            .should_fail
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if self.should_fail.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(SpawnError::SpawnFailed("mock failure".into()));
         }
 

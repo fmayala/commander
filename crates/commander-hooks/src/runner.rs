@@ -123,9 +123,7 @@ impl SubprocessHookRunner {
             Ok(ho) => {
                 if ho.block {
                     return HookResult::Deny {
-                        reason: ho
-                            .block_reason
-                            .unwrap_or_else(|| "blocked by hook".into()),
+                        reason: ho.block_reason.unwrap_or_else(|| "blocked by hook".into()),
                     };
                 }
                 if let Some(payload) = ho.mutated_payload {

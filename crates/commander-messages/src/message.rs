@@ -141,7 +141,9 @@ mod tests {
 
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         match back {
-            ContentBlock::ToolResult { content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
                 assert_eq!(content, "file contents");
                 assert!(!is_error);
             }

@@ -36,10 +36,8 @@ impl TranscriptWriter {
     }
 
     pub async fn append(&mut self, msg: &Message) -> Result<(), TranscriptError> {
-        let mut line = serde_json::to_string(msg).map_err(|e| TranscriptError::Json {
-            line: 0,
-            source: e,
-        })?;
+        let mut line =
+            serde_json::to_string(msg).map_err(|e| TranscriptError::Json { line: 0, source: e })?;
         line.push('\n');
         self.file.write_all(line.as_bytes()).await?;
         self.file.flush().await?;

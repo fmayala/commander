@@ -3,6 +3,7 @@ mod config;
 mod db;
 
 use clap::{Parser, Subcommand};
+use commander_tasks::task::TaskKind;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -32,6 +33,16 @@ enum Commands {
 
     /// Show project status overview
     Status,
+
+    /// Run as an agent worker (invoked by supervisor, not user-facing)
+    AgentWorker {
+        /// Agent ID
+        #[arg(long)]
+        id: String,
+        /// Path to agent config JSON
+        #[arg(long)]
+        config: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -46,6 +57,15 @@ enum TaskAction {
         /// Task IDs this depends on
         #[arg(short, long)]
         depends_on: Vec<String>,
+        /// Acceptance criterion (repeat for multiple)
+        #[arg(long = "criteria")]
+        acceptance_criteria: Vec<String>,
+        /// Allowed file pattern (glob, repeat for multiple)
+        #[arg(long = "file")]
+        files: Vec<String>,
+        /// Task kind: implementation work or exploration/reporting only
+        #[arg(long, value_enum, default_value_t = TaskKindArg::Implement)]
+        kind: TaskKindArg,
     },
     /// List all tasks
     List,
@@ -54,6 +74,21 @@ enum TaskAction {
         /// Task ID
         id: String,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum TaskKindArg {
+    Implement,
+    Explore,
+}
+
+impl From<TaskKindArg> for TaskKind {
+    fn from(value: TaskKindArg) -> Self {
+        match value {
+            TaskKindArg::Implement => TaskKind::Implement,
+            TaskKindArg::Explore => TaskKind::Explore,
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -74,7 +109,18 @@ fn main() -> anyhow::Result<()> {
                 title,
                 priority,
                 depends_on,
-            } => commands::task::add(&project_dir, &title, &priority, &depends_on),
+                acceptance_criteria,
+                files,
+                kind,
+            } => commands::task::add(
+                &project_dir,
+                &title,
+                &priority,
+                &depends_on,
+                &acceptance_criteria,
+                &files,
+                kind.into(),
+            ),
             TaskAction::List => commands::task::list(&project_dir),
             TaskAction::Status { id } => commands::task::status(&project_dir, &id),
         },
@@ -83,5 +129,9 @@ fn main() -> anyhow::Result<()> {
             rt.block_on(commands::run::run(&project_dir))
         }
         Commands::Status => commands::status::run(&project_dir),
+        Commands::AgentWorker { id, config } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::agent_worker::run(&id, &config))
+        }
     }
 }

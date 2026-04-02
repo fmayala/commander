@@ -4,3 +4,8 @@
 *.swo
 .env
 .commander/
+.superpowers/
+.claude/
+autoresearch/
+docs/
+PRODUCTION_SCOPE.md

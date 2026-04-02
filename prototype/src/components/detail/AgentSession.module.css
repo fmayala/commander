@@ -72,9 +72,11 @@
 }
 
 .controlBtnDanger {
-  composes: controlBtn;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
   color: var(--red);
-  border-color: rgba(239, 68, 68, 0.3);
 }
 
 .controlBtnDanger:hover {

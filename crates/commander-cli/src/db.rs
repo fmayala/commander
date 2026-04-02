@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+    task_kind TEXT NOT NULL DEFAULT 'implement',
     priority TEXT NOT NULL DEFAULT 'P2',
     depends_on TEXT NOT NULL DEFAULT '[]',
     parent_id TEXT,
@@ -51,5 +52,22 @@ pub fn open_db_readonly(path: &Path) -> Result<Connection> {
 
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
+    ensure_task_kind_column(conn)?;
+    Ok(())
+}
+
+fn ensure_task_kind_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    if !columns.iter().any(|c| c == "task_kind") {
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN task_kind TEXT NOT NULL DEFAULT 'implement'",
+            [],
+        )?;
+    }
+
     Ok(())
 }

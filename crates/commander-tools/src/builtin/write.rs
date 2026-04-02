@@ -35,8 +35,14 @@ impl Tool for WriteTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let file_path = input["file_path"].as_str().unwrap();
-        let content = input["content"].as_str().unwrap();
+        let file_path = input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::Validation("file_path is required".into()))?;
+        let content = input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::Validation("content is required".into()))?;
 
         let path = if std::path::Path::new(file_path).is_absolute() {
             PathBuf::from(file_path)
@@ -46,9 +52,9 @@ impl Tool for WriteTool {
 
         // PathGuard check: enforce boundary before any write
         if let Some(guard) = &ctx.path_guard {
-            guard.check_write(&path).map_err(|e| ToolError::BoundaryViolation {
-                path: e.path,
-            })?;
+            guard
+                .check_write(&path)
+                .map_err(|e| ToolError::BoundaryViolation { path: e.path })?;
         }
 
         // Create parent directories

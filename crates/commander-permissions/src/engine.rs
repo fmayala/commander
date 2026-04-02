@@ -118,10 +118,7 @@ mod tests {
         engine.allow_rules.push(PermissionRule::allow("Bash"));
 
         // Deny wins even though allow also matches
-        assert!(matches!(
-            engine.check("Bash"),
-            PermissionDecision::Deny(_)
-        ));
+        assert!(matches!(engine.check("Bash"), PermissionDecision::Deny(_)));
     }
 
     #[test]

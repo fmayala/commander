@@ -20,12 +20,16 @@ pub fn run(project_dir: &Path) -> Result<()> {
 name = "{project_name}"
 
 [runtime]
+provider = "anthropic"
 default_model = "claude-sonnet-4-6"
 max_output_tokens = 16384
 
 [supervisor]
 max_agents = 5
 tick_interval_ms = 2000
+nudge_after_ms = 120000
+restart_after_ms = 300000
+max_restarts = 2
 
 [validation]
 # test_command = "cargo test"
@@ -67,9 +71,6 @@ with evidence for each acceptance criterion.
     db::init_schema(&conn)?;
     println!("Initialized database at {}", db_path.display());
 
-    println!(
-        "\nCommander initialized in {}",
-        cmd_dir.display()
-    );
+    println!("\nCommander initialized in {}", cmd_dir.display());
     Ok(())
 }

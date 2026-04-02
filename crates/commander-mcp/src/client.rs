@@ -85,12 +85,12 @@ impl McpClient {
                 client.initialize().await?;
                 Ok(client)
             }
-            McpTransport::Sse { .. } => {
-                Err(McpError::UnsupportedTransport("SSE not yet implemented".into()))
-            }
-            McpTransport::Http { .. } => {
-                Err(McpError::UnsupportedTransport("HTTP not yet implemented".into()))
-            }
+            McpTransport::Sse { .. } => Err(McpError::UnsupportedTransport(
+                "SSE not yet implemented".into(),
+            )),
+            McpTransport::Http { .. } => Err(McpError::UnsupportedTransport(
+                "HTTP not yet implemented".into(),
+            )),
         }
     }
 
@@ -155,8 +155,8 @@ impl McpClient {
             params,
         };
 
-        let mut req_bytes = serde_json::to_vec(&req)
-            .map_err(|e| McpError::InvalidResponse(e.to_string()))?;
+        let mut req_bytes =
+            serde_json::to_vec(&req).map_err(|e| McpError::InvalidResponse(e.to_string()))?;
         req_bytes.push(b'\n');
 
         let stdin = self.stdin.as_mut().unwrap();

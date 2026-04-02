@@ -1,6 +1,6 @@
-pub mod task;
-pub mod queue;
 pub mod dependency;
+pub mod queue;
+pub mod task;
 
-pub use task::*;
 pub use queue::*;
+pub use task::*;

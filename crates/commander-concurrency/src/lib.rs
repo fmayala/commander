@@ -1,7 +1,7 @@
-pub mod policy;
 pub mod key;
+pub mod policy;
 pub mod slot;
 
-pub use policy::*;
 pub use key::*;
+pub use policy::*;
 pub use slot::*;

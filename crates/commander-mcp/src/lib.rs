@@ -1,9 +1,9 @@
-pub mod config;
 pub mod client;
-pub mod tool;
+pub mod config;
 pub mod manager;
+pub mod tool;
 
-pub use config::*;
 pub use client::*;
-pub use tool::McpTool;
+pub use config::*;
 pub use manager::*;
+pub use tool::McpTool;

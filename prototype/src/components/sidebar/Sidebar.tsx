@@ -3,9 +3,11 @@ import { RepoItem } from "./RepoItem";
 import styles from "./Sidebar.module.css";
 
 export function Sidebar() {
-  // rerender-derived-state: subscribe to derived counts, not the full agents Map
   const repos = useWorkspace((s) => s.repos);
-  const activeCount = useWorkspace((s) => s.activeAgentCount());
+  const agentsMap = useWorkspace((s) => s.agents);
+  const activeCount = Array.from(agentsMap.values()).filter(
+    (a) => a.status === "working" || a.status === "waiting"
+  ).length;
   const maxAgents = useWorkspace((s) => s.maxAgents);
 
   return (

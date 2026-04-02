@@ -15,10 +15,7 @@ pub enum DurableOp {
         filter: Option<String>,
     },
     /// Spawn child agent, parent freed until child completes.
-    SpawnChild {
-        profile_name: String,
-        input: Value,
-    },
+    SpawnChild { profile_name: String, input: Value },
     /// Cache pure computation result. On replay, returns cached result.
     Memo { key: String, result: Value },
 }

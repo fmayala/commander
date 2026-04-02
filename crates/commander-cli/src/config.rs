@@ -27,19 +27,32 @@ fn default_root() -> String {
 
 #[derive(Debug, Deserialize)]
 pub struct RuntimeConfig {
+    #[serde(default = "default_provider")]
+    provider: String,
     #[serde(default = "default_model")]
     pub default_model: String,
     #[serde(default = "default_max_tokens")]
     pub max_output_tokens: u32,
 }
 
+impl RuntimeConfig {
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+}
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            provider: default_provider(),
             default_model: default_model(),
             max_output_tokens: default_max_tokens(),
         }
     }
+}
+
+fn default_provider() -> String {
+    "anthropic".into()
 }
 
 fn default_model() -> String {
@@ -56,6 +69,12 @@ pub struct SupervisorConfig {
     pub max_agents: u32,
     #[serde(default = "default_tick_interval_ms")]
     pub tick_interval_ms: u64,
+    #[serde(default = "default_nudge_after_ms")]
+    pub nudge_after_ms: u64,
+    #[serde(default = "default_restart_after_ms")]
+    pub restart_after_ms: u64,
+    #[serde(default = "default_max_restarts")]
+    pub max_restarts: u32,
 }
 
 impl Default for SupervisorConfig {
@@ -63,6 +82,9 @@ impl Default for SupervisorConfig {
         Self {
             max_agents: default_max_agents(),
             tick_interval_ms: default_tick_interval_ms(),
+            nudge_after_ms: default_nudge_after_ms(),
+            restart_after_ms: default_restart_after_ms(),
+            max_restarts: default_max_restarts(),
         }
     }
 }
@@ -73,6 +95,18 @@ fn default_max_agents() -> u32 {
 
 fn default_tick_interval_ms() -> u64 {
     2000
+}
+
+fn default_nudge_after_ms() -> u64 {
+    120_000
+}
+
+fn default_restart_after_ms() -> u64 {
+    300_000
+}
+
+fn default_max_restarts() -> u32 {
+    2
 }
 
 #[derive(Debug, Deserialize)]

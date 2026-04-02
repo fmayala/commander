@@ -39,12 +39,15 @@ impl Tool for ReadTool {
             ctx.cwd.join(file_path)
         };
 
-        let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
-            ToolError::Execution(format!("failed to read {}: {e}", path.display()))
-        })?;
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| ToolError::Execution(format!("failed to read {}: {e}", path.display())))?;
 
         let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let limit = input.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let limit = input
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
 
         let lines: Vec<&str> = content.lines().collect();
         let end = limit.map_or(lines.len(), |l| (offset + l).min(lines.len()));

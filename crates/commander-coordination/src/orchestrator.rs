@@ -93,11 +93,7 @@ pub trait Orchestrator: Send + Sync {
     ) -> Result<(), OrchestratorError>;
 
     /// Any -> Escalated with reason.
-    async fn escalate_task(
-        &self,
-        task_id: &str,
-        reason: &str,
-    ) -> Result<(), OrchestratorError>;
+    async fn escalate_task(&self, task_id: &str, reason: &str) -> Result<(), OrchestratorError>;
 
     /// Run the validation pipeline for a completed task.
     async fn validate(&self, task_id: &str) -> ValidationResult;
@@ -171,11 +167,7 @@ impl Orchestrator for InMemoryOrchestrator {
             .map_err(|e| OrchestratorError::InvalidTransition(e.to_string()))
     }
 
-    async fn escalate_task(
-        &self,
-        task_id: &str,
-        _reason: &str,
-    ) -> Result<(), OrchestratorError> {
+    async fn escalate_task(&self, task_id: &str, _reason: &str) -> Result<(), OrchestratorError> {
         let mut q = self.queue.lock().unwrap();
         q.escalate(task_id)
             .map_err(|e| OrchestratorError::InvalidTransition(e.to_string()))
@@ -192,8 +184,8 @@ impl Orchestrator for InMemoryOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commander_tasks::task::{Task, TaskStatus};
     use commander_tasks::queue::TaskQueue;
+    use commander_tasks::task::{Task, TaskStatus};
 
     fn task(id: &str) -> Task {
         Task::new(id, "proj", format!("Task {id}"))

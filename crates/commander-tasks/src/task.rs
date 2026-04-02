@@ -14,6 +14,8 @@ pub struct Task {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     pub status: TaskStatus,
+    #[serde(default)]
+    pub kind: TaskKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claimed_by: Option<String>,
     #[serde(default)]
@@ -41,6 +43,27 @@ pub enum TaskStatus {
     Discovered,
     Retrying,
     Escalated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Implement,
+    Explore,
+}
+
+impl TaskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskKind::Implement => "implement",
+            TaskKind::Explore => "explore",
+        }
+    }
+
+    pub fn requires_in_scope_changes(self, has_allowed_scope: bool) -> bool {
+        has_allowed_scope && matches!(self, TaskKind::Implement)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +96,7 @@ impl Task {
             depends_on: Vec::new(),
             parent_id: None,
             status: TaskStatus::Pending,
+            kind: TaskKind::Implement,
             claimed_by: None,
             files: Vec::new(),
             chain_artifact_id: None,
@@ -91,6 +115,11 @@ impl Task {
 
     pub fn with_parent(mut self, parent_id: impl Into<String>) -> Self {
         self.parent_id = Some(parent_id.into());
+        self
+    }
+
+    pub fn with_kind(mut self, kind: TaskKind) -> Self {
+        self.kind = kind;
         self
     }
 }

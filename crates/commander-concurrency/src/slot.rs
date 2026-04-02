@@ -7,11 +7,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum SlotError {
     #[error("at capacity for group {key}: {active}/{max}")]
-    AtCapacity {
-        key: String,
-        active: u32,
-        max: u32,
-    },
+    AtCapacity { key: String, active: u32, max: u32 },
 }
 
 /// Tracks active runs per derived group key.

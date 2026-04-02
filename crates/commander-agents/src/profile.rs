@@ -46,12 +46,14 @@ impl AgentProfile {
     /// Parse a markdown file with YAML frontmatter into an AgentProfile.
     pub fn from_markdown(content: &str, source_path: Option<&Path>) -> Result<Self, ProfileError> {
         let (frontmatter, body) = split_frontmatter(content)?;
-        let mut profile: AgentProfile =
-            serde_json::from_value(serde_json::to_value(
+        let mut profile: AgentProfile = serde_json::from_value(
+            serde_json::to_value(
                 serde_yaml_ng::from_str::<serde_json::Value>(&frontmatter)
                     .map_err(|e| ProfileError::YamlParse(e.to_string()))?,
-            ).map_err(|e| ProfileError::YamlParse(e.to_string()))?)
-            .map_err(|e| ProfileError::YamlParse(e.to_string()))?;
+            )
+            .map_err(|e| ProfileError::YamlParse(e.to_string()))?,
+        )
+        .map_err(|e| ProfileError::YamlParse(e.to_string()))?;
 
         profile.system_prompt = body.trim().to_string();
         profile.source_path = source_path.map(|p| p.to_path_buf());
@@ -60,8 +62,7 @@ impl AgentProfile {
 
     /// Load a profile from a file path.
     pub fn from_file(path: &Path) -> Result<Self, ProfileError> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| ProfileError::Io(e.to_string()))?;
+        let content = std::fs::read_to_string(path).map_err(|e| ProfileError::Io(e.to_string()))?;
         Self::from_markdown(&content, Some(path))
     }
 }
@@ -135,7 +136,10 @@ permission_mode: "ask"
 Read-only agent.
 "#;
         let profile = AgentProfile::from_markdown(md, None).unwrap();
-        assert_eq!(profile.tools, Some(vec!["Read".into(), "Glob".into(), "Grep".into()]));
+        assert_eq!(
+            profile.tools,
+            Some(vec!["Read".into(), "Glob".into(), "Grep".into()])
+        );
         assert_eq!(profile.permission_mode, PermissionMode::Ask);
     }
 

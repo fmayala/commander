@@ -14,10 +14,7 @@ pub struct McpManager {
 
 impl McpManager {
     pub fn new(configs: Vec<McpServerConfig>) -> Self {
-        let configs = configs
-            .into_iter()
-            .map(|c| (c.name.clone(), c))
-            .collect();
+        let configs = configs.into_iter().map(|c| (c.name.clone(), c)).collect();
         Self {
             configs,
             clients: HashMap::new(),

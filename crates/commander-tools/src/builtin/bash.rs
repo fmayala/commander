@@ -33,15 +33,26 @@ impl Tool for BashTool {
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let command = input["command"].as_str().unwrap();
+        if is_disallowed_long_running(command) {
+            return Ok(ToolOutput::error(
+                "Long-running dev server commands are disabled for agent runs. Use build/test commands instead.",
+            ));
+        }
         let timeout_ms = input
             .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(120_000);
+        let command_cwd = ctx
+            .env
+            .get("COMMANDER_TASK_CWD")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| ctx.cwd.clone());
 
         let child = Command::new("bash")
             .arg("-c")
             .arg(command)
-            .current_dir(&ctx.cwd)
+            .current_dir(&command_cwd)
             .envs(&ctx.env)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -67,9 +78,7 @@ impl Tool for BashTool {
                 if output.status.success() {
                     Ok(ToolOutput::success(Value::String(combined)))
                 } else {
-                    Ok(ToolOutput::error(format!(
-                        "Exit code {code}\n{combined}"
-                    )))
+                    Ok(ToolOutput::error(format!("Exit code {code}\n{combined}")))
                 }
             }
             Ok(Err(e)) => Err(ToolError::Execution(format!("process error: {e}"))),
@@ -81,6 +90,19 @@ impl Tool for BashTool {
             }
         }
     }
+}
+
+fn is_disallowed_long_running(command: &str) -> bool {
+    let c = command.to_ascii_lowercase();
+    let normalized = c.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized.contains("npm run dev")
+        || normalized.contains("pnpm dev")
+        || normalized.contains("yarn dev")
+        || normalized.contains("npm start")
+        || normalized == "vite"
+        || normalized.starts_with("vite ")
+        || normalized == "npx vite"
+        || normalized.starts_with("npx vite ")
 }
 
 #[cfg(test)]
@@ -122,5 +144,17 @@ mod tests {
         let result = BashTool.call(input, &ctx()).await.unwrap();
         assert!(result.is_error);
         assert!(result.content.as_str().unwrap().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn blocks_long_running_dev_server_commands() {
+        let input = serde_json::json!({"command": "npm run dev"});
+        let result = BashTool.call(input, &ctx()).await.unwrap();
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .as_str()
+            .unwrap()
+            .contains("Long-running dev server commands are disabled"));
     }
 }

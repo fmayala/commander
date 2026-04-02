@@ -28,10 +28,7 @@ pub fn topo_sort(tasks: &HashMap<String, Task>) -> Option<Vec<String>> {
     for (id, task) in tasks {
         in_degree.entry(id.as_str()).or_insert(0);
         for dep in &task.depends_on {
-            graph
-                .entry(dep.as_str())
-                .or_default()
-                .push(id.as_str());
+            graph.entry(dep.as_str()).or_default().push(id.as_str());
             *in_degree.entry(id.as_str()).or_insert(0) += 1;
         }
     }

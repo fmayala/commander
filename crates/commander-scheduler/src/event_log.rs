@@ -72,8 +72,8 @@ impl EventLog {
     }
 
     pub fn append(&mut self, record: &EventRecord) -> Result<(), EventLogError> {
-        let mut line =
-            serde_json::to_string(record).map_err(|e| EventLogError::Json { line: 0, source: e })?;
+        let mut line = serde_json::to_string(record)
+            .map_err(|e| EventLogError::Json { line: 0, source: e })?;
         line.push('\n');
         self.file.write_all(line.as_bytes())?;
         self.file.flush()?;
@@ -96,12 +96,11 @@ impl EventLog {
             if trimmed.is_empty() {
                 continue;
             }
-            let record: EventRecord = serde_json::from_str(trimmed).map_err(|e| {
-                EventLogError::Json {
+            let record: EventRecord =
+                serde_json::from_str(trimmed).map_err(|e| EventLogError::Json {
                     line: i + 1,
                     source: e,
-                }
-            })?;
+                })?;
             records.push(record);
         }
 
@@ -160,7 +159,8 @@ mod tests {
 
         let mut log = EventLog::open(&path).unwrap();
         log.append(&make_record(EventKind::RunCreated)).unwrap();
-        log.append(&make_record(EventKind::ToolCallStarted)).unwrap();
+        log.append(&make_record(EventKind::ToolCallStarted))
+            .unwrap();
         log.append(&make_record(EventKind::Completed)).unwrap();
         drop(log);
 
@@ -178,11 +178,15 @@ mod tests {
         // Write 2 complete records + partial junk
         let mut log = EventLog::open(&path).unwrap();
         log.append(&make_record(EventKind::RunCreated)).unwrap();
-        log.append(&make_record(EventKind::ToolCallStarted)).unwrap();
+        log.append(&make_record(EventKind::ToolCallStarted))
+            .unwrap();
         drop(log);
 
         // Append partial junk (simulate crash mid-write)
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         file.write_all(b"{\"partial\":true").unwrap();
         drop(file);
 

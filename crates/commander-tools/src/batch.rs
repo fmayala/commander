@@ -1,5 +1,5 @@
-use crate::tool::{ConcurrencyClass, ToolOutput, ToolError, ToolContext, Tool};
 use crate::registry::ToolRegistry;
+use crate::tool::{ConcurrencyClass, Tool, ToolContext, ToolError, ToolOutput};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -104,7 +104,10 @@ pub async fn execute_batch(
                     env,
                     path_guard,
                 };
-                let output = tool.call(input, &ctx).await;
+                let output = match tool.validate(&input) {
+                    Ok(()) => tool.call(input, &ctx).await,
+                    Err(e) => Err(e),
+                };
                 BatchResult { id, name, output }
             });
         }
@@ -116,10 +119,7 @@ pub async fn execute_batch(
                 results.push(BatchResult {
                     id: call.id.clone(),
                     name: call.name.clone(),
-                    output: Err(ToolError::Execution(format!(
-                        "unknown tool: {}",
-                        call.name
-                    ))),
+                    output: Err(ToolError::Execution(format!("unknown tool: {}", call.name))),
                 });
             }
         }
@@ -137,11 +137,11 @@ pub async fn execute_batch(
         let mut results = Vec::new();
         for call in &batch.calls {
             let output = match registry.get(&call.name) {
-                Some(tool) => tool.call(call.input.clone(), ctx).await,
-                None => Err(ToolError::Execution(format!(
-                    "unknown tool: {}",
-                    call.name
-                ))),
+                Some(tool) => match tool.validate(&call.input) {
+                    Ok(()) => tool.call(call.input.clone(), ctx).await,
+                    Err(e) => Err(e),
+                },
+                None => Err(ToolError::Execution(format!("unknown tool: {}", call.name))),
             };
             results.push(BatchResult {
                 id: call.id.clone(),
@@ -172,7 +172,9 @@ mod tests {
                 concurrency: ConcurrencyClass::Concurrent,
             }))
         }
-        fn validate(&self, _: &Value) -> Result<(), ToolError> { Ok(()) }
+        fn validate(&self, _: &Value) -> Result<(), ToolError> {
+            Ok(())
+        }
         async fn call(&self, _: Value, _: &ToolContext) -> Result<ToolOutput, ToolError> {
             Ok(ToolOutput::success(Value::String(self.0.clone())))
         }
@@ -188,7 +190,9 @@ mod tests {
                 concurrency: ConcurrencyClass::Serial,
             }))
         }
-        fn validate(&self, _: &Value) -> Result<(), ToolError> { Ok(()) }
+        fn validate(&self, _: &Value) -> Result<(), ToolError> {
+            Ok(())
+        }
         async fn call(&self, _: Value, _: &ToolContext) -> Result<ToolOutput, ToolError> {
             Ok(ToolOutput::success(Value::String(self.0.clone())))
         }
@@ -201,8 +205,16 @@ mod tests {
         reg.register(Arc::new(ConcurrentTool("Glob".into())));
 
         let calls = vec![
-            PendingToolCall { id: "1".into(), name: "Read".into(), input: Value::Null },
-            PendingToolCall { id: "2".into(), name: "Glob".into(), input: Value::Null },
+            PendingToolCall {
+                id: "1".into(),
+                name: "Read".into(),
+                input: Value::Null,
+            },
+            PendingToolCall {
+                id: "2".into(),
+                name: "Glob".into(),
+                input: Value::Null,
+            },
         ];
 
         let batches = plan_batches(&calls, &reg);
@@ -219,9 +231,21 @@ mod tests {
         reg.register(Arc::new(ConcurrentTool("Glob".into())));
 
         let calls = vec![
-            PendingToolCall { id: "1".into(), name: "Read".into(), input: Value::Null },
-            PendingToolCall { id: "2".into(), name: "Write".into(), input: Value::Null },
-            PendingToolCall { id: "3".into(), name: "Glob".into(), input: Value::Null },
+            PendingToolCall {
+                id: "1".into(),
+                name: "Read".into(),
+                input: Value::Null,
+            },
+            PendingToolCall {
+                id: "2".into(),
+                name: "Write".into(),
+                input: Value::Null,
+            },
+            PendingToolCall {
+                id: "3".into(),
+                name: "Glob".into(),
+                input: Value::Null,
+            },
         ];
 
         let batches = plan_batches(&calls, &reg);

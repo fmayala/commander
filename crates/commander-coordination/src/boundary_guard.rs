@@ -1,11 +1,14 @@
 use commander_tools::path_guard::{BoundaryViolation, PathGuard};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Layer 2 implementation of PathGuard.
 /// Checks file paths against the task's allowed file list and profile scope.
 pub struct TaskBoundaryGuard {
     /// Allowed path patterns (glob). If empty, all paths are allowed.
     allowed_patterns: Vec<glob::Pattern>,
+    /// Optional workspace root used to match relative task patterns
+    /// (for example `webapp/src/App.jsx`) against absolute write paths.
+    workspace_root: Option<PathBuf>,
 }
 
 impl TaskBoundaryGuard {
@@ -14,13 +17,28 @@ impl TaskBoundaryGuard {
             .iter()
             .filter_map(|p| glob::Pattern::new(p).ok())
             .collect();
-        Self { allowed_patterns }
+        Self {
+            allowed_patterns,
+            workspace_root: None,
+        }
+    }
+
+    pub fn new_with_workspace(patterns: Vec<String>, workspace_root: impl Into<PathBuf>) -> Self {
+        let allowed_patterns = patterns
+            .iter()
+            .filter_map(|p| glob::Pattern::new(p).ok())
+            .collect();
+        Self {
+            allowed_patterns,
+            workspace_root: Some(workspace_root.into()),
+        }
     }
 
     /// Create a guard that allows all paths (no restrictions).
     pub fn allow_all() -> Self {
         Self {
             allowed_patterns: Vec::new(),
+            workspace_root: None,
         }
     }
 }
@@ -36,6 +54,17 @@ impl PathGuard for TaskBoundaryGuard {
         for pattern in &self.allowed_patterns {
             if pattern.matches(&path_str) {
                 return Ok(());
+            }
+        }
+
+        if let Some(root) = &self.workspace_root {
+            if let Ok(relative) = path.strip_prefix(root) {
+                let rel_str = relative.to_string_lossy();
+                for pattern in &self.allowed_patterns {
+                    if pattern.matches(&rel_str) {
+                        return Ok(());
+                    }
+                }
             }
         }
 
@@ -80,5 +109,13 @@ mod tests {
     fn empty_patterns_list_allows_all() {
         let guard = TaskBoundaryGuard::new(vec![]);
         assert!(guard.check_write(&PathBuf::from("any/path")).is_ok());
+    }
+
+    #[test]
+    fn matches_relative_pattern_for_absolute_path_with_workspace_root() {
+        let root = PathBuf::from("/tmp/project");
+        let guard =
+            TaskBoundaryGuard::new_with_workspace(vec!["webapp/src/App.jsx".into()], root.clone());
+        assert!(guard.check_write(&root.join("webapp/src/App.jsx")).is_ok());
     }
 }

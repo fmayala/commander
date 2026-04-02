@@ -13,6 +13,9 @@ export function App() {
   const detailOpen = useWorkspace((s) => s.selection.kind !== "none");
 
   useEffect(() => {
+    // Guard against StrictMode double-invocation
+    if (useWorkspace.getState().repos.length > 0) return;
+
     useWorkspace.getState().setRepos(MOCK_REPOS);
     for (const agent of MOCK_AGENTS) {
       useWorkspace.getState().addAgent(agent);

@@ -12,7 +12,9 @@ pub fn run(project_dir: &Path) -> Result<()> {
     // Task counts by status
     let mut stmt = conn.prepare("SELECT status, COUNT(*) FROM tasks GROUP BY status")?;
     let counts: Vec<(String, u32)> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
 
     let total: u32 = counts.iter().map(|(_, c)| c).sum();
@@ -27,7 +29,24 @@ pub fn run(project_dir: &Path) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    println!("\nAgents running: {running}/{}", config.supervisor.max_agents);
+    println!(
+        "\nAgents running: {running}/{}",
+        config.supervisor.max_agents
+    );
+
+    let mut run_stmt = conn.prepare("SELECT status, COUNT(*) FROM agent_runs GROUP BY status")?;
+    let run_counts: Vec<(String, u32)> = run_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if !run_counts.is_empty() {
+        println!("\nAgent runs:");
+        for (status, count) in &run_counts {
+            println!("  {status:<12} {count}");
+        }
+    }
 
     Ok(())
 }

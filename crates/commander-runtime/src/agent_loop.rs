@@ -37,6 +37,7 @@ pub struct AgentLoopConfig {
     pub env: HashMap<String, String>,
     pub system_prompt: Option<String>,
     pub max_tokens: u32,
+    pub checkpoint_path: Option<PathBuf>,
 }
 
 /// The core agent loop. Each iteration = one LLM call + tool execution.
@@ -95,6 +96,7 @@ pub async fn run_agent_loop(
             .append(&assistant_msg)
             .await
             .map_err(|e| LoopError::Transcript(e.to_string()))?;
+        save_checkpoint(config.checkpoint_path.as_deref(), messages)?;
 
         observer.on_assistant_message(&assistant_msg).await;
 
@@ -140,8 +142,7 @@ pub async fn run_agent_loop(
                         continue;
                     }
                     PermissionDecision::Ask(prompt) => {
-                        let approved =
-                            observer.on_permission_ask(&call.name, &prompt).await;
+                        let approved = observer.on_permission_ask(&call.name, &prompt).await;
                         if !approved {
                             all_result_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: call.id.clone(),
@@ -221,9 +222,25 @@ pub async fn run_agent_loop(
             .append(&result_msg)
             .await
             .map_err(|e| LoopError::Transcript(e.to_string()))?;
+        save_checkpoint(config.checkpoint_path.as_deref(), messages)?;
     }
 
     Ok(SessionOutcome::MaxTurns)
+}
+
+fn save_checkpoint(path: Option<&std::path::Path>, messages: &[Message]) -> Result<(), LoopError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| LoopError::Transcript(e.to_string()))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let content =
+        serde_json::to_string(messages).map_err(|e| LoopError::Transcript(e.to_string()))?;
+    std::fs::write(&tmp, content).map_err(|e| LoopError::Transcript(e.to_string()))?;
+    std::fs::rename(&tmp, path).map_err(|e| LoopError::Transcript(e.to_string()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -247,9 +264,7 @@ mod tests {
     #[async_trait::async_trait]
     impl LlmAdapter for MockAdapter {
         async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
-            let turn = self
-                .turn
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let turn = self.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if turn == 0 {
                 Ok(LlmResponse {
                     content: vec![
@@ -312,6 +327,7 @@ mod tests {
             env: HashMap::new(),
             system_prompt: Some("You are a test agent.".into()),
             max_tokens: 4096,
+            checkpoint_path: None,
         };
 
         let mut messages = vec![Message::user("Read hello.txt")];

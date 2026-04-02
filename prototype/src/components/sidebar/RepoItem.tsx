@@ -12,9 +12,9 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export function RepoItem({ repo }: { repo: Repo }) {
-  // rerender-defer-reads: agentsByRepo result is only needed in render, not callbacks
-  const agents = useWorkspace((s) => s.agentsByRepo(repo.id));
+  const agentsMap = useWorkspace((s) => s.agents);
   const select = useWorkspace((s) => s.select);
+  const agents = Array.from(agentsMap.values()).filter((a) => a.repoId === repo.id);
   const [expanded, setExpanded] = useState(agents.length > 0);
 
   const hasActive = agents.some((a) => a.status === "working" || a.status === "waiting");
