@@ -1587,6 +1587,242 @@ mod tests {
         assert_eq!(status, "claimed");
     }
 
+    // --- HIGH-001 tests: supervisor helper functions ---
+
+    #[test]
+    fn disposition_from_exit_complete_result() {
+        let dir = std::env::temp_dir().join(format!("disp-test-{}", uuid::Uuid::new_v4().as_simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result_path = dir.join("result.json");
+        let stderr_path = dir.join("stderr.log");
+
+        let result = WorkerResult {
+            task_id: "t1".into(),
+            agent_id: "a1".into(),
+            attempt_id: "att-1".into(),
+            status: "complete".into(),
+            summary: "done".into(),
+            criteria_evidence: vec![],
+            issues: vec![],
+        };
+        std::fs::write(&result_path, serde_json::to_string(&result).unwrap()).unwrap();
+
+        match disposition_from_exit(0, &result_path, &stderr_path) {
+            Disposition::CandidateComplete(r) => assert_eq!(r.summary, "done"),
+            Disposition::Failed(reason) => panic!("expected CandidateComplete, got Failed({reason})"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disposition_from_exit_nonzero_with_stderr() {
+        let dir = std::env::temp_dir().join(format!("disp-err-{}", uuid::Uuid::new_v4().as_simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result_path = dir.join("result.json");
+        let stderr_path = dir.join("stderr.log");
+        std::fs::write(&stderr_path, "thread panicked at 'index out of bounds'").unwrap();
+
+        match disposition_from_exit(1, &result_path, &stderr_path) {
+            Disposition::Failed(reason) => {
+                assert!(reason.contains("exit code 1"), "reason={reason}");
+                assert!(reason.contains("panicked"), "reason={reason}");
+            }
+            Disposition::CandidateComplete(_) => panic!("expected Failed for exit code 1"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disposition_from_exit_zero_missing_result_file() {
+        let dir = std::env::temp_dir().join(format!("disp-miss-{}", uuid::Uuid::new_v4().as_simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result_path = dir.join("result.json"); // does not exist
+        let stderr_path = dir.join("stderr.log");
+
+        match disposition_from_exit(0, &result_path, &stderr_path) {
+            Disposition::Failed(reason) => {
+                assert!(reason.contains("missing") || reason.contains("invalid"), "reason={reason}");
+            }
+            Disposition::CandidateComplete(_) => panic!("expected Failed for missing result"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disposition_from_exit_zero_failed_status() {
+        let dir = std::env::temp_dir().join(format!("disp-fail-{}", uuid::Uuid::new_v4().as_simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result_path = dir.join("result.json");
+        let stderr_path = dir.join("stderr.log");
+
+        let result = WorkerResult {
+            task_id: "t1".into(),
+            agent_id: "a1".into(),
+            attempt_id: "att-1".into(),
+            status: "failed".into(),
+            summary: "LLM adapter error".into(),
+            criteria_evidence: vec![],
+            issues: vec![],
+        };
+        std::fs::write(&result_path, serde_json::to_string(&result).unwrap()).unwrap();
+
+        match disposition_from_exit(0, &result_path, &stderr_path) {
+            Disposition::Failed(reason) => assert_eq!(reason, "LLM adapter error"),
+            Disposition::CandidateComplete(_) => panic!("expected Failed for failed status"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn escalate_blocked_pending_tasks_cascades_through_deps() {
+        let conn = open_test_db();
+        // Task A is escalated
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on)
+             VALUES ('t-a', 'proj', 'Task A', 'escalated', '[]')",
+            [],
+        ).unwrap();
+        // Task B depends on A -> should be escalated
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on)
+             VALUES ('t-b', 'proj', 'Task B', 'pending', '[\"t-a\"]')",
+            [],
+        ).unwrap();
+        // Task C depends on B -> should cascade-escalate
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on)
+             VALUES ('t-c', 'proj', 'Task C', 'pending', '[\"t-b\"]')",
+            [],
+        ).unwrap();
+        // Task D has no deps -> should stay pending
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on)
+             VALUES ('t-d', 'proj', 'Task D', 'pending', '[]')",
+            [],
+        ).unwrap();
+
+        let escalated = escalate_blocked_pending_tasks(&conn).unwrap();
+        assert_eq!(escalated, 2, "B and C should both be escalated");
+
+        let status_b: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 't-b'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status_b, "escalated");
+
+        let status_c: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 't-c'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status_c, "escalated");
+
+        let status_d: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 't-d'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status_d, "pending");
+    }
+
+    #[test]
+    fn query_runnable_tasks_filters_by_dependency_status() {
+        let conn = open_test_db();
+        // Dep task: complete
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on, acceptance_criteria, files, task_kind)
+             VALUES ('dep-done', 'proj', 'Dep Done', 'complete', '[]', '[]', '[]', 'implement')",
+            [],
+        ).unwrap();
+        // Dep task: pending
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on, acceptance_criteria, files, task_kind)
+             VALUES ('dep-pending', 'proj', 'Dep Pending', 'pending', '[]', '[]', '[]', 'implement')",
+            [],
+        ).unwrap();
+        // Task A: depends on complete dep -> runnable
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on, acceptance_criteria, files, task_kind)
+             VALUES ('t-runnable', 'proj', 'Runnable', 'pending', '[\"dep-done\"]', '[]', '[]', 'implement')",
+            [],
+        ).unwrap();
+        // Task B: depends on pending dep -> NOT runnable
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, depends_on, acceptance_criteria, files, task_kind)
+             VALUES ('t-blocked', 'proj', 'Blocked', 'pending', '[\"dep-pending\"]', '[]', '[]', 'implement')",
+            [],
+        ).unwrap();
+
+        let runnable = query_runnable_tasks(&conn).unwrap();
+        let ids: Vec<&str> = runnable.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"dep-pending"), "dep-pending has no deps so it's runnable");
+        assert!(ids.contains(&"t-runnable"), "t-runnable's dep is complete");
+        assert!(!ids.contains(&"t-blocked"), "t-blocked's dep is still pending");
+    }
+
+    #[test]
+    fn criterion_matches_exact_substring() {
+        assert!(criterion_matches(
+            "all tests pass",
+            "all tests pass",
+            "ran cargo test, 100% pass"
+        ));
+    }
+
+    #[test]
+    fn criterion_matches_fuzzy_token_overlap() {
+        // 60% token overlap threshold: 4/5 required tokens present = 80%
+        assert!(criterion_matches(
+            "error handling for file operations",
+            "error handling in file",
+            "added operations for safety"
+        ));
+    }
+
+    #[test]
+    fn criterion_matches_rejects_unrelated_evidence() {
+        assert!(!criterion_matches(
+            "add database migration",
+            "fixed CSS styling",
+            "adjusted padding and margin values"
+        ));
+    }
+
+    #[test]
+    fn format_stale_ms_formats_seconds_and_minutes() {
+        assert_eq!(format_stale_ms(5000), "5s");
+        assert_eq!(format_stale_ms(90000), "1m30s");
+        assert_eq!(format_stale_ms(0), "0s");
+    }
+
+    #[test]
+    fn count_task_attempts_excludes_abandoned_and_restarted() {
+        let conn = open_test_db();
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status)
+             VALUES ('t-att', 'proj', 'Task', 'pending')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_runs (agent_id, task_id, pid, proc_start_time, status)
+             VALUES ('a1', 't-att', 1, 0, 'succeeded')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_runs (agent_id, task_id, pid, proc_start_time, status)
+             VALUES ('a2', 't-att', 2, 0, 'abandoned')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_runs (agent_id, task_id, pid, proc_start_time, status)
+             VALUES ('a3', 't-att', 3, 0, 'restarted')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_runs (agent_id, task_id, pid, proc_start_time, status)
+             VALUES ('a4', 't-att', 4, 0, 'failed')",
+            [],
+        ).unwrap();
+
+        let count = count_task_attempts(&conn, "t-att").unwrap();
+        assert_eq!(count, 2, "only succeeded and failed count as attempts");
+    }
+
     #[test]
     fn reclaim_orphaned_claims_leaves_task_with_active_agent_run() {
         let conn = open_test_db();
