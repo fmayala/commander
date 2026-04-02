@@ -322,6 +322,10 @@ fn write_result_atomic(
     // atomic rename
     std::fs::rename(&tmp, &path)?;
 
+    // Sync the parent directory so the rename is durable on crash.
+    let dir = std::fs::File::open(results_dir)?;
+    dir.sync_all()?;
+
     Ok(())
 }
 
@@ -489,5 +493,64 @@ mod tests {
         assert!(!worker_failed("complete"));
         assert!(!worker_failed("incomplete"));
         assert!(!worker_failed(""));
+    }
+
+    #[test]
+    fn write_result_atomic_creates_durable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = WorkerResult {
+            task_id: "t1".into(),
+            agent_id: "a1".into(),
+            attempt_id: "att1".into(),
+            status: "complete".into(),
+            summary: "done".into(),
+            criteria_evidence: vec![],
+            issues: vec![],
+        };
+        write_result_atomic(dir.path(), "t1", "a1", &result).unwrap();
+
+        let path = dir.path().join("t1-a1.json");
+        assert!(path.exists(), "result file should exist");
+
+        let tmp = path.with_extension("json.tmp");
+        assert!(!tmp.exists(), "tmp file should be cleaned up after rename");
+
+        let parsed: WorkerResult =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.status, "complete");
+        assert_eq!(parsed.summary, "done");
+    }
+
+    #[test]
+    fn write_result_atomic_overwrites_previous() {
+        let dir = tempfile::tempdir().unwrap();
+        let result1 = WorkerResult {
+            task_id: "t1".into(),
+            agent_id: "a1".into(),
+            attempt_id: "att1".into(),
+            status: "failed".into(),
+            summary: "first".into(),
+            criteria_evidence: vec![],
+            issues: vec![],
+        };
+        write_result_atomic(dir.path(), "t1", "a1", &result1).unwrap();
+
+        let result2 = WorkerResult {
+            task_id: "t1".into(),
+            agent_id: "a1".into(),
+            attempt_id: "att2".into(),
+            status: "complete".into(),
+            summary: "second".into(),
+            criteria_evidence: vec![],
+            issues: vec![],
+        };
+        write_result_atomic(dir.path(), "t1", "a1", &result2).unwrap();
+
+        let path = dir.path().join("t1-a1.json");
+        let parsed: WorkerResult =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.status, "complete");
+        assert_eq!(parsed.summary, "second");
+        assert_eq!(parsed.attempt_id, "att2");
     }
 }
