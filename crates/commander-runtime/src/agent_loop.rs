@@ -284,11 +284,80 @@ mod tests {
     use super::*;
     use crate::adapter::*;
     use crate::observer::AutoApproveObserver;
-    use commander_hooks::NoopHookRunner;
+    use commander_hooks::{HookEvent, HookResult, HookRunner, NoopHookRunner};
     use commander_messages::TokenUsage;
-    use commander_permissions::PermissionMode;
+    use commander_permissions::{PermissionMode, PermissionRule};
     use commander_tools::builtin;
     use tempfile::TempDir;
+
+    /// Adapter that always returns a ToolUse (never EndTurn) — used to trigger MaxTurns.
+    struct InfiniteToolAdapter;
+
+    #[async_trait::async_trait]
+    impl LlmAdapter for InfiniteToolAdapter {
+        async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
+            Ok(LlmResponse {
+                content: vec![ContentBlock::ToolUse {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                }],
+                usage: TokenUsage::default(),
+                stop_reason: StopReason::ToolUse,
+            })
+        }
+        fn model_id(&self) -> &str { "mock-infinite" }
+        fn context_window(&self) -> u32 { 128_000 }
+        fn max_output_tokens(&self) -> u32 { 4096 }
+    }
+
+    /// Adapter that requests one tool call on turn 0, then ends on turn 1.
+    struct OneToolAdapter {
+        tool_name: &'static str,
+        call_count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmAdapter for OneToolAdapter {
+        async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
+            let count = self.call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count == 0 {
+                Ok(LlmResponse {
+                    content: vec![ContentBlock::ToolUse {
+                        id: "tu_1".into(),
+                        name: self.tool_name.into(),
+                        input: serde_json::json!({"command": "echo hi"}),
+                    }],
+                    usage: TokenUsage::default(),
+                    stop_reason: StopReason::ToolUse,
+                })
+            } else {
+                Ok(LlmResponse {
+                    content: vec![ContentBlock::text("done")],
+                    usage: TokenUsage::default(),
+                    stop_reason: StopReason::EndTurn,
+                })
+            }
+        }
+        fn model_id(&self) -> &str { "mock-one-tool" }
+        fn context_window(&self) -> u32 { 128_000 }
+        fn max_output_tokens(&self) -> u32 { 4096 }
+    }
+
+    /// HookRunner that denies all PreToolUse events.
+    struct DenyAllHookRunner;
+
+    #[async_trait::async_trait]
+    impl HookRunner for DenyAllHookRunner {
+        async fn run(&self, event: &HookEvent) -> HookResult {
+            match event {
+                HookEvent::PreToolUse { .. } => HookResult::Deny {
+                    reason: "blocked by test hook".into(),
+                },
+                _ => HookResult::Continue,
+            }
+        }
+    }
 
     /// Mock adapter that returns a Read tool call on the first turn,
     /// then ends the conversation.
@@ -548,5 +617,218 @@ mod tests {
             err,
             LoopError::Adapter(AdapterError::RateLimited { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn agent_loop_returns_max_turns_when_never_ends() {
+        let dir = TempDir::new().unwrap();
+        let transcript_path = dir.path().join("transcript.jsonl");
+        let mut transcript = TranscriptWriter::open(&transcript_path).await.unwrap();
+
+        let mut registry = ToolRegistry::new();
+        builtin::register_builtins(&mut registry);
+
+        let permissions = PermissionEngine::new(PermissionMode::AutoApprove);
+        let hooks = NoopHookRunner;
+        let observer = AutoApproveObserver;
+        let cancel = CancellationToken::new();
+        let adapter = InfiniteToolAdapter;
+
+        let config = AgentLoopConfig {
+            max_turns: 2,
+            cwd: dir.path().to_path_buf(),
+            session_id: "test-max-turns".into(),
+            env: HashMap::new(),
+            system_prompt: None,
+            max_tokens: 1024,
+            checkpoint_path: None,
+        };
+
+        let mut messages = vec![Message::user("go")];
+
+        let outcome = run_agent_loop(
+            config,
+            &adapter,
+            &registry,
+            &permissions,
+            &hooks,
+            &observer,
+            &mut transcript,
+            &mut messages,
+            cancel,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, SessionOutcome::MaxTurns);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_returns_cancelled_when_token_fired() {
+        let dir = TempDir::new().unwrap();
+        let transcript_path = dir.path().join("transcript.jsonl");
+        let mut transcript = TranscriptWriter::open(&transcript_path).await.unwrap();
+
+        let registry = ToolRegistry::new();
+        let permissions = PermissionEngine::new(PermissionMode::AutoApprove);
+        let hooks = NoopHookRunner;
+        let observer = AutoApproveObserver;
+
+        // Cancel before entering the loop
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let adapter = InfiniteToolAdapter;
+
+        let config = AgentLoopConfig {
+            max_turns: 10,
+            cwd: dir.path().to_path_buf(),
+            session_id: "test-cancelled".into(),
+            env: HashMap::new(),
+            system_prompt: None,
+            max_tokens: 1024,
+            checkpoint_path: None,
+        };
+
+        let mut messages = vec![Message::user("go")];
+
+        let outcome = run_agent_loop(
+            config,
+            &adapter,
+            &registry,
+            &permissions,
+            &hooks,
+            &observer,
+            &mut transcript,
+            &mut messages,
+            cancel,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, SessionOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_returns_denied_tool_result_on_permission_deny() {
+        let dir = TempDir::new().unwrap();
+        let transcript_path = dir.path().join("transcript.jsonl");
+        let mut transcript = TranscriptWriter::open(&transcript_path).await.unwrap();
+
+        let mut registry = ToolRegistry::new();
+        builtin::register_builtins(&mut registry);
+
+        let mut permissions = PermissionEngine::new(PermissionMode::AutoApprove);
+        permissions
+            .deny_rules
+            .push(PermissionRule::deny("Bash").with_reason("no shell in test"));
+
+        let hooks = NoopHookRunner;
+        let observer = AutoApproveObserver;
+        let cancel = CancellationToken::new();
+
+        let adapter = OneToolAdapter {
+            tool_name: "Bash",
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        };
+
+        let config = AgentLoopConfig {
+            max_turns: 5,
+            cwd: dir.path().to_path_buf(),
+            session_id: "test-perm-deny".into(),
+            env: HashMap::new(),
+            system_prompt: None,
+            max_tokens: 1024,
+            checkpoint_path: None,
+        };
+
+        let mut messages = vec![Message::user("run bash")];
+
+        let outcome = run_agent_loop(
+            config,
+            &adapter,
+            &registry,
+            &permissions,
+            &hooks,
+            &observer,
+            &mut transcript,
+            &mut messages,
+            cancel,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Loop ends on turn 2 (EndTurn from adapter)
+        assert_eq!(outcome, SessionOutcome::EndTurn);
+
+        // All messages: [initial_user, assistant_tool_use, user_tool_result, assistant_end]
+        // Find any ToolResult block across all messages.
+        let has_denied = messages.iter().flat_map(|m| m.content.iter()).any(|b| match b {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                *is_error && content.contains("Permission denied")
+            }
+            _ => false,
+        });
+        assert!(has_denied, "expected a denied ToolResult block");
+    }
+
+    #[tokio::test]
+    async fn agent_loop_returns_blocked_tool_result_on_hook_deny() {
+        let dir = TempDir::new().unwrap();
+        let transcript_path = dir.path().join("transcript.jsonl");
+        let mut transcript = TranscriptWriter::open(&transcript_path).await.unwrap();
+
+        let mut registry = ToolRegistry::new();
+        builtin::register_builtins(&mut registry);
+
+        let permissions = PermissionEngine::new(PermissionMode::AutoApprove);
+        let hooks = DenyAllHookRunner;
+        let observer = AutoApproveObserver;
+        let cancel = CancellationToken::new();
+
+        let adapter = OneToolAdapter {
+            tool_name: "Bash",
+            call_count: std::sync::atomic::AtomicU32::new(0),
+        };
+
+        let config = AgentLoopConfig {
+            max_turns: 5,
+            cwd: dir.path().to_path_buf(),
+            session_id: "test-hook-deny".into(),
+            env: HashMap::new(),
+            system_prompt: None,
+            max_tokens: 1024,
+            checkpoint_path: None,
+        };
+
+        let mut messages = vec![Message::user("run bash")];
+
+        let outcome = run_agent_loop(
+            config,
+            &adapter,
+            &registry,
+            &permissions,
+            &hooks,
+            &observer,
+            &mut transcript,
+            &mut messages,
+            cancel,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, SessionOutcome::EndTurn);
+
+        let has_blocked = messages.iter().flat_map(|m| m.content.iter()).any(|b| match b {
+            ContentBlock::ToolResult { content, is_error, .. } => {
+                *is_error && content.contains("Blocked by hook")
+            }
+            _ => false,
+        });
+        assert!(has_blocked, "expected a hook-blocked ToolResult block");
     }
 }
