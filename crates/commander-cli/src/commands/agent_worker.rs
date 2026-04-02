@@ -423,7 +423,20 @@ fn write_heartbeat(path: &Path, phase: &str) -> Result<()> {
     });
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec(&payload)?)?;
+
+    // fsync the tmp file to ensure data is on disk before rename.
+    let file = std::fs::File::open(&tmp)?;
+    file.sync_all()?;
+    drop(file);
+
     std::fs::rename(&tmp, path)?;
+
+    // Sync the parent directory so the rename is durable on crash.
+    if let Some(parent) = path.parent() {
+        let dir = std::fs::File::open(parent)?;
+        dir.sync_all()?;
+    }
+
     Ok(())
 }
 
@@ -552,5 +565,34 @@ mod tests {
         assert_eq!(parsed.status, "complete");
         assert_eq!(parsed.summary, "second");
         assert_eq!(parsed.attempt_id, "att2");
+    }
+
+    #[test]
+    fn write_heartbeat_creates_durable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let hb_path = dir.path().join("heartbeats").join("agent1.json");
+        write_heartbeat(&hb_path, "running").unwrap();
+
+        assert!(hb_path.exists(), "heartbeat file should exist");
+
+        let tmp = hb_path.with_extension("json.tmp");
+        assert!(!tmp.exists(), "tmp file should be cleaned up after rename");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hb_path).unwrap()).unwrap();
+        assert_eq!(parsed["phase"], "running");
+        assert!(parsed["updated_at"].is_string());
+    }
+
+    #[test]
+    fn write_heartbeat_overwrites_previous() {
+        let dir = tempfile::tempdir().unwrap();
+        let hb_path = dir.path().join("agent1.json");
+        write_heartbeat(&hb_path, "starting").unwrap();
+        write_heartbeat(&hb_path, "running").unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hb_path).unwrap()).unwrap();
+        assert_eq!(parsed["phase"], "running");
     }
 }
