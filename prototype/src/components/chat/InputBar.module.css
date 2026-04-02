@@ -1,0 +1,64 @@
+.inputBar {
+  border-top: 1px solid var(--border);
+  padding: 12px 24px;
+  position: relative;
+}
+
+.inputRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.inputRow:focus-within {
+  border-color: var(--accent);
+}
+
+.textarea {
+  flex: 1;
+  resize: none;
+  min-height: 20px;
+  max-height: 120px;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+.sendBtn {
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.sendBtn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 4px 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.model {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.model:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
