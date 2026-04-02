@@ -22,8 +22,14 @@ commander-scheduler = { path = "../commander-scheduler" }
 commander-supervisor = { path = "../commander-supervisor" }
 commander-concurrency = { path = "../commander-concurrency" }
 tokio.workspace = true
+tokio-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+toml = "0.8"
