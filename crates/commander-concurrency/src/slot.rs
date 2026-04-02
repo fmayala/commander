@@ -165,4 +165,145 @@ mod tests {
         assert_eq!(allowed.len(), 1);
         assert_eq!(allowed[0].project_id, "proj-b");
     }
+
+    #[test]
+    fn acquire_at_capacity_returns_error() {
+        let policies = vec![ConcurrencyPolicy {
+            key_expr: "project_id".into(),
+            max_runs: 1,
+            strategy: Default::default(),
+        }];
+        let mut mgr = SlotManager::new(policies);
+
+        mgr.acquire("proj-a").unwrap();
+        let err = mgr.acquire("proj-a").unwrap_err();
+        match err {
+            SlotError::AtCapacity { key, active, max } => {
+                assert_eq!(key, "proj-a");
+                assert_eq!(active, 1);
+                assert_eq!(max, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn release_without_acquire_is_noop() {
+        let policies = vec![ConcurrencyPolicy {
+            key_expr: "project_id".into(),
+            max_runs: 2,
+            strategy: Default::default(),
+        }];
+        let mut mgr = SlotManager::new(policies);
+
+        // Release a key that was never acquired — should not panic
+        mgr.release("proj-x");
+        assert_eq!(mgr.active_count("proj-x"), 0);
+    }
+
+    #[test]
+    fn release_to_zero_removes_key() {
+        let policies = vec![ConcurrencyPolicy {
+            key_expr: "project_id".into(),
+            max_runs: 2,
+            strategy: Default::default(),
+        }];
+        let mut mgr = SlotManager::new(policies);
+
+        mgr.acquire("proj-a").unwrap();
+        assert_eq!(mgr.active_count("proj-a"), 1);
+
+        mgr.release("proj-a");
+        assert_eq!(mgr.active_count("proj-a"), 0);
+
+        // Key should be removed from the map — can acquire again up to max
+        mgr.acquire("proj-a").unwrap();
+        mgr.acquire("proj-a").unwrap();
+        assert_eq!(mgr.active_count("proj-a"), 2);
+    }
+
+    #[test]
+    fn empty_policies_allow_everything() {
+        let mut mgr = SlotManager::new(vec![]);
+        let t = task("1", "any-project");
+
+        assert!(mgr.can_run(&t));
+        // Acquire always succeeds with no policies
+        mgr.acquire("any-key").unwrap();
+        mgr.acquire("any-key").unwrap();
+        assert_eq!(mgr.active_count("any-key"), 2);
+    }
+
+    #[test]
+    fn global_policy_limits_all_keys() {
+        let policies = vec![ConcurrencyPolicy {
+            key_expr: "global".into(),
+            max_runs: 2,
+            strategy: Default::default(),
+        }];
+        let mut mgr = SlotManager::new(policies);
+
+        // Global policy: all tasks share the same pool
+        let t_a = task("1", "proj-a");
+        let t_b = task("2", "proj-b");
+        assert!(mgr.can_run(&t_a));
+        assert!(mgr.can_run(&t_b));
+
+        mgr.acquire("_global").unwrap();
+        mgr.acquire("_global").unwrap();
+
+        // Both projects blocked because global pool is full
+        assert!(!mgr.can_run(&t_a));
+        assert!(!mgr.can_run(&t_b));
+    }
+
+    #[test]
+    fn independent_groups_dont_interfere() {
+        let policies = vec![ConcurrencyPolicy {
+            key_expr: "project_id".into(),
+            max_runs: 1,
+            strategy: Default::default(),
+        }];
+        let mut mgr = SlotManager::new(policies);
+
+        mgr.acquire("proj-a").unwrap();
+        mgr.acquire("proj-b").unwrap();
+        mgr.acquire("proj-c").unwrap();
+
+        // Each group is independent — all at max 1 but different keys
+        assert_eq!(mgr.active_count("proj-a"), 1);
+        assert_eq!(mgr.active_count("proj-b"), 1);
+        assert_eq!(mgr.active_count("proj-c"), 1);
+
+        // proj-a is full but proj-d is fine
+        let t_d = task("4", "proj-d");
+        assert!(mgr.can_run(&t_d));
+    }
+
+    #[test]
+    fn derive_key_uses_first_policy() {
+        let policies = vec![
+            ConcurrencyPolicy {
+                key_expr: "project_id".into(),
+                max_runs: 2,
+                strategy: Default::default(),
+            },
+            ConcurrencyPolicy {
+                key_expr: "global".into(),
+                max_runs: 5,
+                strategy: Default::default(),
+            },
+        ];
+        let mgr = SlotManager::new(policies);
+        let t = task("1", "my-proj");
+
+        // derive_key uses the first policy's key_expr
+        assert_eq!(mgr.derive_key(&t), "my-proj");
+    }
+
+    #[test]
+    fn derive_key_no_policies_returns_global() {
+        let mgr = SlotManager::new(vec![]);
+        let t = task("1", "proj");
+        assert_eq!(mgr.derive_key(&t), "_global");
+    }
 }
