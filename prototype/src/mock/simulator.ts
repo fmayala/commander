@@ -68,3 +68,45 @@ export function stopSimulator(): void {
     intervalId = null;
   }
 }
+
+let agentCounter = 20;
+
+export function simulateDispatch(text: string, repoId: string): { agentId: string; taskId: string } {
+  const agentId = `agent-${++agentCounter}`;
+  const taskId = `task-${agentCounter}`;
+
+  const task: import("../types").Task = {
+    id: taskId,
+    repoId,
+    title: text.length > 60 ? text.slice(0, 60) + "..." : text,
+    description: text,
+    acceptanceCriteria: ["Implementation complete", "Tests pass"],
+    priority: "P2",
+    status: "claimed",
+    assignedAgentId: agentId,
+    dependsOn: [],
+    files: ["src/**"],
+    attempts: [{ agentId, startedAt: Date.now(), endedAt: null, outcome: null, reason: null }],
+  };
+
+  const agent: import("../types").Agent = {
+    id: agentId,
+    repoId,
+    taskId,
+    status: "working",
+    startedAt: Date.now(),
+    transcript: [
+      {
+        id: `te-init-${agentCounter}`,
+        kind: "thinking",
+        timestamp: Date.now(),
+        content: `Starting work on: ${text}`,
+      },
+    ],
+  };
+
+  useWorkspace.getState().addTask(task);
+  useWorkspace.getState().addAgent(agent);
+
+  return { agentId, taskId };
+}

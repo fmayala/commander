@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { useChat } from "../../store/chat";
 import { useWorkspace } from "../../store/workspace";
 import { MentionDropdown } from "./MentionDropdown";
+import { simulateDispatch } from "../../mock/simulator";
 import type { ChatMessage, MentionOption } from "../../types";
 import styles from "./InputBar.module.css";
 
@@ -92,17 +93,39 @@ export function InputBar() {
     setValue("");
     setMentionQuery(null);
 
-    // Mock commander response
+    const repoMention = trimmed.match(/@(\S+)/);
+    const matchedRepo = repoMention
+      ? repos.find((r) => r.name.toLowerCase() === repoMention[1]!.toLowerCase())
+      : repos[0];
+
+    if (!matchedRepo) return;
+
     setTimeout(() => {
-      const reply: ChatMessage = {
+      const cleanText = trimmed.replace(/@\S+\s*/g, "").trim();
+      const ack: ChatMessage = {
         id: `msg-${Date.now()}`,
         type: "commander",
         timestamp: Date.now(),
-        text: `Received: "${trimmed}". (Mock response — dispatch simulation not wired yet.)`,
+        text: `Dispatching to **${matchedRepo.name}**: "${cleanText}"`,
       };
-      addMessage(reply);
-    }, 500);
-  }, [value, addMessage]);
+      addMessage(ack);
+
+      const { agentId, taskId } = simulateDispatch(cleanText, matchedRepo.id);
+
+      const dispatch: ChatMessage = {
+        id: `msg-${Date.now() + 1}`,
+        type: "dispatch",
+        timestamp: Date.now(),
+        text: `${agentId} → ${matchedRepo.name} · ${cleanText.slice(0, 40)} · running`,
+        agentId,
+        taskId,
+        repoId: matchedRepo.id,
+      };
+      addMessage(dispatch);
+
+      useWorkspace.getState().select({ kind: "agent", agentId });
+    }, 600);
+  }, [value, addMessage, repos]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
