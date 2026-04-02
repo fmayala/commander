@@ -310,6 +310,15 @@ pub async fn run(project_dir: &Path) -> Result<()> {
             }
         }
 
+        // --- Step A.5: Reclaim orphaned claims ---
+        // Tasks stuck in 'claimed' with no active agent_runs are orphaned (e.g. supervisor
+        // crashed between claim and spawn). Reset them to 'pending' after a TTL.
+        let reclaimed = reclaim_orphaned_claims(&conn, 60)?;
+        if reclaimed > 0 {
+            tracing::warn!(count = reclaimed, "reclaimed orphaned task claims");
+            println!("  ↺ reclaimed {reclaimed} orphaned task claim(s)");
+        }
+
         // --- Step B: Spawn new agents for runnable tasks ---
         // During graceful shutdown, skip spawning and only drain in-flight agents.
         let runnable = if shutdown.is_cancelled() {
@@ -1357,6 +1366,30 @@ fn query_runnable_tasks(conn: &rusqlite::Connection) -> Result<Vec<RunnableTask>
     Ok(runnable)
 }
 
+/// Resets tasks that have been stuck in `claimed` state for longer than `ttl_secs` seconds
+/// but have no corresponding active `agent_runs` row. This covers the window between a task
+/// being claimed and the supervisor successfully inserting its `agent_runs` entry (CRIT-002).
+fn reclaim_orphaned_claims(conn: &rusqlite::Connection, ttl_secs: u64) -> Result<u32> {
+    let threshold = Utc::now() - chrono::Duration::seconds(ttl_secs as i64);
+    let threshold_str = threshold.format("%Y-%m-%d %H:%M:%S").to_string();
+    let count = conn.execute(
+        "UPDATE tasks
+         SET status = 'pending', claimed_by = NULL, updated_at = datetime('now')
+         WHERE status = 'claimed'
+           AND updated_at < ?1
+           AND (
+             claimed_by IS NULL
+             OR NOT EXISTS (
+               SELECT 1 FROM agent_runs
+               WHERE agent_id = tasks.claimed_by
+                 AND status = 'running'
+             )
+           )",
+        params![threshold_str],
+    )?;
+    Ok(count as u32)
+}
+
 fn count_active_tasks(conn: &rusqlite::Connection) -> Result<u32> {
     let count: u32 = conn.query_row(
         "SELECT COUNT(*) FROM tasks WHERE status NOT IN ('complete', 'failed', 'escalated')",
@@ -1440,5 +1473,74 @@ mod tests {
         );
         assert_eq!(cwd, project);
         let _ = std::fs::remove_dir_all(project);
+    }
+
+    fn open_test_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::init_schema(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn reclaim_orphaned_claims_resets_stuck_task() {
+        let conn = open_test_db();
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, claimed_by, updated_at)
+             VALUES ('t1', 'proj', 'Test', 'claimed', 'agent-old', datetime('now', '-120 seconds'))",
+            [],
+        )
+        .unwrap();
+
+        let count = reclaim_orphaned_claims(&conn, 60).unwrap();
+        assert_eq!(count, 1);
+
+        let status: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[test]
+    fn reclaim_orphaned_claims_leaves_recently_claimed_task() {
+        let conn = open_test_db();
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, claimed_by, updated_at)
+             VALUES ('t2', 'proj', 'Test', 'claimed', 'agent-new', datetime('now', '-5 seconds'))",
+            [],
+        )
+        .unwrap();
+
+        let count = reclaim_orphaned_claims(&conn, 60).unwrap();
+        assert_eq!(count, 0);
+
+        let status: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 't2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "claimed");
+    }
+
+    #[test]
+    fn reclaim_orphaned_claims_leaves_task_with_active_agent_run() {
+        let conn = open_test_db();
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, claimed_by, updated_at)
+             VALUES ('t3', 'proj', 'Test', 'claimed', 'agent-active', datetime('now', '-120 seconds'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_runs (agent_id, task_id, pid, proc_start_time, status)
+             VALUES ('agent-active', 't3', 12345, 0, 'running')",
+            [],
+        )
+        .unwrap();
+
+        let count = reclaim_orphaned_claims(&conn, 60).unwrap();
+        assert_eq!(count, 0);
+
+        let status: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 't3'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "claimed");
     }
 }
