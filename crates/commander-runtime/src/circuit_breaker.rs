@@ -58,7 +58,7 @@ impl<A: LlmAdapter> CircuitBreaker<A> {
 
 #[async_trait]
 impl<A: LlmAdapter> LlmAdapter for CircuitBreaker<A> {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AdapterError> {
+    async fn complete(&self, request: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
         // Determine whether to allow this call, transitioning Open→HalfOpen if cooldown elapsed.
         let allow = {
             let mut guard = self.state.lock().unwrap();
@@ -150,7 +150,7 @@ mod tests {
 
     #[async_trait]
     impl LlmAdapter for MockAdapter {
-        async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, AdapterError> {
+        async fn complete(&self, _request: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
@@ -183,11 +183,11 @@ mod tests {
         Err(AdapterError::Api("server error".to_string()))
     }
 
-    fn make_request() -> LlmRequest {
+    fn make_request() -> LlmRequest<'static> {
         LlmRequest {
-            messages: vec![],
+            messages: &[],
             system_prompt: None,
-            tools: vec![],
+            tools: &[],
             max_tokens: 100,
         }
     }

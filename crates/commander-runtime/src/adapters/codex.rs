@@ -94,9 +94,9 @@ impl CodexAdapter {
     }
 
     /// Build the Codex request body from an LlmRequest.
-    pub fn build_request_body(&self, request: &LlmRequest) -> Value {
-        let input = self.translate_messages(&request.messages);
-        let tools = self.translate_tools(&request.tools);
+    pub fn build_request_body(&self, request: &LlmRequest<'_>) -> Value {
+        let input = self.translate_messages(request.messages);
+        let tools = self.translate_tools(request.tools);
 
         let mut body = json!({
             "model": self.model,
@@ -108,8 +108,8 @@ impl CodexAdapter {
             "max_output_tokens": request.max_tokens,
         });
 
-        if let Some(ref prompt) = request.system_prompt {
-            body["instructions"] = Value::String(prompt.clone());
+        if let Some(prompt) = request.system_prompt {
+            body["instructions"] = Value::String(prompt.to_string());
         }
 
         if !tools.is_empty() {
@@ -240,7 +240,7 @@ impl CodexAdapter {
 
 #[async_trait]
 impl LlmAdapter for CodexAdapter {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AdapterError> {
+    async fn complete(&self, request: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
         let body = self.build_request_body(&request);
 
         let response = self
@@ -355,14 +355,16 @@ mod tests {
             model: "gpt-5.2-codex".into(),
         };
 
+        let messages = vec![commander_messages::Message::user("hello")];
+        let tools = vec![json!({
+            "name": "Read",
+            "description": "Read a file",
+            "input_schema": {"type": "object"}
+        })];
         let request = LlmRequest {
-            messages: vec![commander_messages::Message::user("hello")],
-            system_prompt: Some("You are helpful.".into()),
-            tools: vec![json!({
-                "name": "Read",
-                "description": "Read a file",
-                "input_schema": {"type": "object"}
-            })],
+            messages: &messages,
+            system_prompt: Some("You are helpful."),
+            tools: &tools,
             max_tokens: 4096,
         };
 

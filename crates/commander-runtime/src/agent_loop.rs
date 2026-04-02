@@ -46,18 +46,11 @@ pub struct AgentLoopConfig {
 /// Call the adapter, retrying up to MAX_RATE_LIMIT_RETRIES times on rate-limit errors.
 async fn complete_with_retry(
     adapter: &dyn LlmAdapter,
-    request: LlmRequest,
+    request: LlmRequest<'_>,
 ) -> Result<LlmResponse, AdapterError> {
     let mut last_err = None;
     for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
-        // Rebuild request each attempt (LlmRequest isn't Clone, so pass by value on last attempt)
-        let req = LlmRequest {
-            messages: request.messages.clone(),
-            system_prompt: request.system_prompt.clone(),
-            tools: request.tools.clone(),
-            max_tokens: request.max_tokens,
-        };
-        match adapter.complete(req).await {
+        match adapter.complete(request).await {
             Ok(resp) => return Ok(resp),
             Err(AdapterError::RateLimited { retry_after_ms }) => {
                 tracing::warn!(
@@ -108,11 +101,11 @@ pub async fn run_agent_loop(
 
         tracing::debug!(turn, "starting turn");
 
-        // 1. Call LLM
+        // 1. Call LLM (borrow slices — no clone needed per turn)
         let request = LlmRequest {
-            messages: messages.clone(),
-            system_prompt: config.system_prompt.clone(),
-            tools: tool_schemas.clone(),
+            messages: messages.as_slice(),
+            system_prompt: config.system_prompt.as_deref(),
+            tools: &tool_schemas,
             max_tokens: config.max_tokens,
         };
 
@@ -295,7 +288,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LlmAdapter for InfiniteToolAdapter {
-        async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
+        async fn complete(&self, _req: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
             Ok(LlmResponse {
                 content: vec![ContentBlock::ToolUse {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -319,7 +312,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LlmAdapter for OneToolAdapter {
-        async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
+        async fn complete(&self, _req: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
             let count = self.call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count == 0 {
                 Ok(LlmResponse {
@@ -368,7 +361,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LlmAdapter for MockAdapter {
-        async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
+        async fn complete(&self, _req: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
             let turn = self.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if turn == 0 {
                 Ok(LlmResponse {
@@ -488,7 +481,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LlmAdapter for RateLimitedAdapter {
-        async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse, AdapterError> {
+        async fn complete(&self, _req: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
             let count = self
                 .call_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -830,5 +823,26 @@ mod tests {
             _ => false,
         });
         assert!(has_blocked, "expected a hook-blocked ToolResult block");
+    }
+
+    /// Verify LlmRequest is Copy — this is the core property that eliminates
+    /// the O(n) message clone per LLM turn (HIGH-007).
+    #[test]
+    fn llm_request_is_copy() {
+        let messages = vec![Message::user("hello")];
+        let tools = vec![serde_json::json!({"name": "Read"})];
+        let req = LlmRequest {
+            messages: &messages,
+            system_prompt: Some("system"),
+            tools: &tools,
+            max_tokens: 1024,
+        };
+
+        // If LlmRequest is Copy, assigning it doesn't move — both bindings are valid.
+        let req2 = req;
+        assert_eq!(req.max_tokens, req2.max_tokens);
+        assert_eq!(req.messages.len(), req2.messages.len());
+        assert_eq!(req.tools.len(), req2.tools.len());
+        assert_eq!(req.system_prompt, req2.system_prompt);
     }
 }

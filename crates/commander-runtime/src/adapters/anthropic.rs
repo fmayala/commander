@@ -131,12 +131,12 @@ impl AnthropicAdapter {
 
     /// Build the full request body and apply cch= signing.
     /// Returns the final body string ready to send.
-    pub fn build_signed_body(&self, request: &LlmRequest) -> String {
-        let fingerprint = self.compute_fingerprint(&request.messages);
+    pub fn build_signed_body(&self, request: &LlmRequest<'_>) -> String {
+        let fingerprint = self.compute_fingerprint(request.messages);
         let attribution = self.build_attribution_header(&fingerprint);
-        let system = self.build_system_blocks(request.system_prompt.as_deref(), &attribution);
-        let messages = self.translate_messages(&request.messages);
-        let tools = self.translate_tools(&request.tools);
+        let system = self.build_system_blocks(request.system_prompt, &attribution);
+        let messages = self.translate_messages(request.messages);
+        let tools = self.translate_tools(request.tools);
 
         let mut body = json!({
             "model": self.model,
@@ -224,7 +224,7 @@ impl AnthropicAdapter {
 
 #[async_trait]
 impl LlmAdapter for AnthropicAdapter {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AdapterError> {
+    async fn complete(&self, request: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
         let body_str = self.build_signed_body(&request);
         let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -330,10 +330,11 @@ mod tests {
     #[test]
     fn cch_is_computed_and_replaced() {
         let adapter = make_adapter();
+        let messages = vec![Message::user("hello world this is a test message")];
         let request = LlmRequest {
-            messages: vec![Message::user("hello world this is a test message")],
-            system_prompt: Some("You are a helpful assistant.".into()),
-            tools: vec![],
+            messages: &messages,
+            system_prompt: Some("You are a helpful assistant."),
+            tools: &[],
             max_tokens: 4096,
         };
 
@@ -355,10 +356,11 @@ mod tests {
     #[test]
     fn cch_is_deterministic() {
         let adapter = make_adapter();
+        let messages = vec![Message::user("deterministic test input")];
         let request = LlmRequest {
-            messages: vec![Message::user("deterministic test input")],
-            system_prompt: Some("system prompt".into()),
-            tools: vec![],
+            messages: &messages,
+            system_prompt: Some("system prompt"),
+            tools: &[],
             max_tokens: 4096,
         };
 
@@ -370,10 +372,11 @@ mod tests {
     #[test]
     fn body_contains_attribution_header() {
         let adapter = make_adapter();
+        let messages = vec![Message::user("test")];
         let request = LlmRequest {
-            messages: vec![Message::user("test")],
-            system_prompt: Some("system".into()),
-            tools: vec![],
+            messages: &messages,
+            system_prompt: Some("system"),
+            tools: &[],
             max_tokens: 4096,
         };
 
@@ -386,14 +389,16 @@ mod tests {
     #[test]
     fn tools_included_in_body() {
         let adapter = make_adapter();
+        let messages = vec![Message::user("test")];
+        let tools = vec![serde_json::json!({
+            "name": "Read",
+            "description": "Read a file",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
+        })];
         let request = LlmRequest {
-            messages: vec![Message::user("test")],
+            messages: &messages,
             system_prompt: None,
-            tools: vec![serde_json::json!({
-                "name": "Read",
-                "description": "Read a file",
-                "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
-            })],
+            tools: &tools,
             max_tokens: 4096,
         };
 

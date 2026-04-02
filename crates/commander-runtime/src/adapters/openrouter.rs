@@ -38,7 +38,7 @@ impl OpenRouterAdapter {
         })
     }
 
-    fn translate_messages(&self, request: &LlmRequest) -> Vec<Value> {
+    fn translate_messages(&self, request: &LlmRequest<'_>) -> Vec<Value> {
         let mut result = Vec::new();
         let mut pending_tool_ids: HashSet<String> = HashSet::new();
         let mut pending_assistant_index: Option<usize> = None;
@@ -47,7 +47,7 @@ impl OpenRouterAdapter {
             result.push(json!({"role": "system", "content": prompt}));
         }
 
-        for msg in &request.messages {
+        for msg in request.messages {
             match msg.role {
                 Role::System => continue,
                 Role::User => {
@@ -151,9 +151,9 @@ impl OpenRouterAdapter {
             .collect()
     }
 
-    pub fn build_request_body(&self, request: &LlmRequest) -> Value {
+    pub fn build_request_body(&self, request: &LlmRequest<'_>) -> Value {
         let messages = self.translate_messages(request);
-        let tools = self.translate_tools(&request.tools);
+        let tools = self.translate_tools(request.tools);
 
         let mut body = json!({
             "model": self.model,
@@ -222,7 +222,7 @@ impl OpenRouterAdapter {
 
 #[async_trait]
 impl LlmAdapter for OpenRouterAdapter {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AdapterError> {
+    async fn complete(&self, request: LlmRequest<'_>) -> Result<LlmResponse, AdapterError> {
         let body = self.build_request_body(&request);
         let mut req = self
             .client
@@ -300,14 +300,16 @@ mod tests {
     #[test]
     fn request_body_structure() {
         let adapter = make_adapter();
+        let messages = vec![Message::user("hello")];
+        let tools = vec![json!({
+            "name": "Read",
+            "description": "Read a file",
+            "input_schema": {"type": "object"}
+        })];
         let request = LlmRequest {
-            messages: vec![Message::user("hello")],
-            system_prompt: Some("You are helpful.".into()),
-            tools: vec![json!({
-                "name": "Read",
-                "description": "Read a file",
-                "input_schema": {"type": "object"}
-            })],
+            messages: &messages,
+            system_prompt: Some("You are helpful."),
+            tools: &tools,
             max_tokens: 4096,
         };
 
@@ -375,10 +377,11 @@ mod tests {
             is_error: false,
         }];
 
+        let msgs = vec![Message::user("start"), assistant, partial_results];
         let request = LlmRequest {
-            messages: vec![Message::user("start"), assistant, partial_results],
+            messages: &msgs,
             system_prompt: None,
-            tools: vec![],
+            tools: &[],
             max_tokens: 1024,
         };
         let body = adapter.build_request_body(&request);

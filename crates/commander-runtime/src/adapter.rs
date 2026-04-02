@@ -16,10 +16,14 @@ pub enum AdapterError {
 }
 
 /// Request sent to the LLM.
-pub struct LlmRequest {
-    pub messages: Vec<Message>,
-    pub system_prompt: Option<String>,
-    pub tools: Vec<Value>,
+///
+/// Uses borrowed slices to avoid O(n) cloning of the message history
+/// on every LLM call (see HIGH-007).
+#[derive(Clone, Copy)]
+pub struct LlmRequest<'a> {
+    pub messages: &'a [Message],
+    pub system_prompt: Option<&'a str>,
+    pub tools: &'a [Value],
     pub max_tokens: u32,
 }
 
@@ -40,7 +44,7 @@ pub enum StopReason {
 /// Trait for LLM providers. Implementations handle API calls, auth, retries.
 #[async_trait]
 pub trait LlmAdapter: Send + Sync {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, AdapterError>;
+    async fn complete(&self, request: LlmRequest<'_>) -> Result<LlmResponse, AdapterError>;
     fn model_id(&self) -> &str;
     fn context_window(&self) -> u32;
     fn max_output_tokens(&self) -> u32;
